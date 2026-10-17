@@ -44,6 +44,7 @@ from vision.videoprobe import probe, FrameReader  # noqa: E402
 from vision.oracle import code_for_annotation, load_annotations, oracle_inputs  # noqa: E402
 from vision.rule_engine import evaluate_rules  # noqa: E402
 from vision.triggers import Trigger  # noqa: E402
+from vision.evaluation import action_summary, score_actions, type_comparison  # noqa: E402
 
 CYR_X = "\u0425"  # Cyrillic capital HA
 
@@ -537,6 +538,7 @@ def main() -> int:
     parser.add_argument("--no-sheets", action="store_true", help="Skip contact sheet generation")
     parser.add_argument("--oracle-events", type=Path, help="Offline ENGINE upper bound: inject annotated scenes AND actions, never a vision score")
     parser.add_argument("--baseline-dir", type=Path, help="Existing baseline artifacts directory; never rerun baseline")
+    parser.add_argument("--events", type=Path, default=ROOT / "data/annotations/events.csv", help="Typed ground truth for scoring only, never passed into vision")
     args = parser.parse_args()
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -547,7 +549,13 @@ def main() -> int:
     (out_dir / "run.json").write_text(json.dumps({"argv": sys.argv, "created_at": timestamp,
         "config": json.loads(args.config.read_text()), "oracle_events": str(args.oracle_events) if args.oracle_events else None,
         "oracle_semantics": "annotated scenes AND actions; engine-only upper bound, not vision accuracy"}, ensure_ascii=False, indent=2))
-    annotations = load_annotations(args.oracle_events) if args.oracle_events else None
+    annotation_path = args.oracle_events or args.events
+    if annotation_path.is_file():
+        snapshot = out_dir / "events_input.csv"
+        snapshot.write_bytes(annotation_path.read_bytes())
+        annotations = load_annotations(snapshot)
+    else:
+        annotations = None
 
     print(f"=== ForteVision Evaluation ===")
     print(f"Videos dir:   {args.videos}")
@@ -589,7 +597,7 @@ def main() -> int:
         "dataset": [{"video": e.primary_name, "aliases": e.aliases, "sha256": e.sha256,
                      "duration_sec": e.duration_sec, "label": e.label_verdict} for e in active_entries],
         "source_sha256": {str(p.relative_to(ROOT)): sha256_file(p)
-                          for pattern in ("packages/vision/vision/*.py", "packages/rules/rules/*.*", "configs/*.json")
+                          for pattern in ("packages/vision/vision/**/*.py", "packages/rules/rules/*.*", "configs/*.json")
                           for p in ROOT.glob(pattern) if p.is_file()}})
     (out_dir / "run.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     registry = RuleRegistry.load()
@@ -597,14 +605,15 @@ def main() -> int:
     trace_dir = out_dir / "trace"
     trace_dir.mkdir(exist_ok=True)
     oracle_rows, oracle_scene_rows, oracle_unsupported = [], [], []
-    if annotations is not None:
+    if args.oracle_events is not None:
         (out_dir / "oracle/trace").mkdir(parents=True)
-        shutil.copyfile(args.oracle_events, out_dir / "oracle/events_input.csv")
+        shutil.copyfile(out_dir / "events_input.csv", out_dir / "oracle/events_input.csv")
 
     sheets_dir = out_dir / "sheets"
     sheets_dir.mkdir(parents=True, exist_ok=True)
 
     results_rows: list[dict] = []
+    action_rows = []
     timecode_errors: list[float] = []
     errors_by_group: dict[str, list[float]] = {g: [] for g in unique_groups}
 
@@ -685,11 +694,23 @@ def main() -> int:
             "pred_verdict": pred_verdict,
             "pred_events": pred_events_str,
             "pred_codes": ";".join(sorted({e.event_code for e in events})),
+            "label_codes": "",
+            "type_ok": "",
+            "type_hit": "",
             "runtime_sec": runtime_sec,
             "outcome": outcome,
         }
-        results_rows.append(row)
         if annotations is not None:
+            row.update(type_comparison(events, annotations.get(entry.primary_name, [])))
+            if error:
+                row["type_ok"] = row["type_hit"] = False
+            action = score_actions(entry.primary_name, res.quality["triggers"] if res else [],
+                                   annotations.get(entry.primary_name, []))
+            if action:
+                action["normal_no_violation"] = action["normal"] and pred_verdict == "no_violation"
+                action_rows.append(action)
+        results_rows.append(row)
+        if args.oracle_events is not None:
             gt = annotations.get(entry.primary_name, [])
             ot, oscenes, opresence, unsupported = oracle_inputs(gt, entry.duration_sec)
             oracle_events = evaluate_rules(ot, oscenes, opresence, entry.duration_sec, registry, cfg.rules)
@@ -699,16 +720,16 @@ def main() -> int:
             for state in oscenes:
                 nearest = min(actual_trace, key=lambda f: abs(f["t"]-state.t), default=None)
                 if nearest and abs(nearest["t"]-state.t) <= 0.8:
-                    observed_presence[round(state.t, 4)] = {k: nearest[k] for k in ("cashier_present", "cashier_seated")}
+                    observed_presence[round(state.t, 4)] = {k: nearest.get(k) for k in ("cashier_present", "cashier_seated", "cashier_near_safe")}
             scene_only_events = evaluate_rules(observed_triggers, oscenes, observed_presence,
                                                entry.duration_sec, registry, cfg.rules)
             scene_outcome = ("TP" if actual_viol else "FP") if scene_only_events else ("FN" if actual_viol else "TN")
-            oracle_scene_rows.append(dict(row, pred_verdict="violation" if scene_only_events else "no_violation",
+            oracle_scene_rows.append(dict(row, **type_comparison(scene_only_events, gt), pred_verdict="violation" if scene_only_events else "no_violation",
                 pred_codes=";".join(sorted({e.event_code for e in scene_only_events})),
                 pred_events=";".join(f"{e.event_code}@{e.start_sec:.1f}" for e in scene_only_events),
                 outcome=scene_outcome, runtime_sec=0.0))
             oracle_outcome = ("TP" if actual_viol else "FP") if oracle_events else ("FN" if actual_viol else "TN")
-            oracle_rows.append(dict(row, pred_verdict="violation" if oracle_events else "no_violation",
+            oracle_rows.append(dict(row, **type_comparison(oracle_events, gt), pred_verdict="violation" if oracle_events else "no_violation",
                 pred_codes=";".join(sorted({e.event_code for e in oracle_events})),
                 pred_events=";".join(f"{e.event_code}@{e.start_sec:.1f}" for e in oracle_events), outcome=oracle_outcome,
                 runtime_sec=0.0))  # no oracle inference is performed
@@ -745,6 +766,9 @@ def main() -> int:
             "pred_verdict",
             "pred_events",
             "pred_codes",
+            "label_codes",
+            "type_ok",
+            "type_hit",
             "runtime_sec",
             "outcome",
         ]
@@ -784,6 +808,10 @@ def main() -> int:
     overall_metrics = calc_metrics(results_rows, timecode_errors)
     overall_metrics["analysis_errors"] = sum(r["outcome"] == "ERROR" for r in results_rows)
     overall_metrics["rows"] = len(results_rows)
+    tp_rows = [r for r in results_rows if r["outcome"] == "TP"]
+    overall_metrics["type_correct_tp"] = sum(r["type_ok"] is True for r in tp_rows)
+    overall_metrics["type_correct_fraction_among_tp"] = overall_metrics["type_correct_tp"]/len(tp_rows) if tp_rows else None
+    overall_metrics["type_hit_fraction_among_tp"] = sum(r["type_hit"] is True for r in tp_rows)/len(tp_rows) if tp_rows else None
     by_angle_group: dict[str, dict] = {}
     for g in unique_groups:
         g_rows = [r for r in results_rows if r["angle_group"] == g]
@@ -794,6 +822,9 @@ def main() -> int:
         "summary": overall_metrics,
         "by_angle_group": by_angle_group,
     }
+    metrics_payload["trigger_accuracy"] = action_summary(action_rows)
+    metrics_payload["type_ok_definition"] = "exact equality of predicted and annotated code sets; type_hit records any overlap separately"
+    (out_dir / "triggers.json").write_text(json.dumps(action_summary(action_rows), ensure_ascii=False, indent=2))
     def typed_metrics(rows):
         by_code = {}
         for code in TAXONOMY:
@@ -813,7 +844,7 @@ def main() -> int:
     metrics_payload["runtime_sec"] = {"per_video": {r["video"]: r["runtime_sec"] for r in results_rows},
         "max": max((r["runtime_sec"] for r in results_rows), default=None),
         "sum": sum(r["runtime_sec"] for r in results_rows)}
-    if annotations is not None:
+    if args.oracle_events is not None:
         oracle_metrics = {"summary": calc_metrics(oracle_rows, []), "unsupported_rows": oracle_unsupported,
             "scene_only_observed_actions_summary": calc_metrics(oracle_scene_rows, []),
             "by_type": typed_metrics(oracle_rows), "scene_only_by_type": typed_metrics(oracle_scene_rows),

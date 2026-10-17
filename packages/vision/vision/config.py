@@ -48,11 +48,83 @@ class DetectorConfig:
 
 
 @dataclass
+class RulePolicy:
+    enabled: bool = True
+    threshold: float = 0.75
+    min_frames: int = 3
+    min_sec: float = 0.4
+    max_gap_sec: float = 0.45
+    lookback_sec: float = 2.0
+    clear_frames: int = 3
+    clear_sec: float = 0.4
+
+
+def _rule_policies() -> dict[str, RulePolicy]:
+    policies = {code: RulePolicy() for code in (
+        "LEAVE_VALUABLES", "LEAVE_SCREEN_UNLOCKED", "SAFE_OPEN", "PERSONAL_ITEMS",
+        "PHONE_USE", "OUTSIDER", "DOOR_OPEN", "MANUAL_COUNT")}
+    policies["PERSONAL_ITEMS"] = RulePolicy(threshold=0.88, min_frames=12, min_sec=3.0)
+    policies["MANUAL_COUNT"] = RulePolicy(threshold=0.95, min_frames=12, min_sec=3.0)
+    policies["SAFE_OPEN"] = RulePolicy(threshold=0.95, min_frames=8, min_sec=1.4)
+    policies["DOOR_OPEN"] = RulePolicy(threshold=0.8, min_frames=12, min_sec=3.0)
+    policies["OUTSIDER"].threshold = 0.45
+    return policies
+
+
+@dataclass
 class RuleEngineConfig:
     scene_threshold: float = 0.7
     door_hold_sec: float = 3.0
     min_outsider_sec: float = 0.6
     min_scene_sec: float = 0.6
+    types: dict[str, RulePolicy] = field(default_factory=_rule_policies)
+    leave_observation_sec: float = 3.0
+    entry_observation_sec: float = 8.0
+    merge_gap_sec: float = 3.0
+
+    def policy(self, code: str) -> RulePolicy:
+        return self.types[code]
+
+
+@dataclass
+class TriggerConfig:
+    min_person_score: float = 0.3
+    max_person_center_y: float = 0.72
+    min_person_height_frac: float = 0.12
+    fragment_gap_sec: float = 3.5
+    noncashier_fragment_gap_sec: float = 0.8
+    fragment_iou: float = 0.2
+    fragment_distance_ratio: float = 0.55
+    independent_overlap_sec: float = 0.6
+    seat_calibration_sec: float = 6.0
+    entry_calibration_sec: float = 6.0
+    stand_height_ratio: float = 1.4
+    stand_head_delta_frac: float = 0.05
+    seat_radius_x: float = 0.45
+    seat_radius_y: float = 0.5
+    absence_sec: float = 2.0
+    departure_hold_sec: float = 1.0
+    departure_min_frames: int = 3
+    onset_lookback_sec: float = 2.0
+    seated_hold_sec: float = 1.0
+    seated_confirmation_score: float = 0.4
+    gap_tolerance_sec: float = 0.8
+    entry_travel_frac: float = 0.05
+    entry_inward_frac: float = 0.015
+    entry_direction_window_sec: float = 4.0
+    entry_progress_quantile: float = 0.9
+    entry_body_frames: int = 3
+    entry_body_hold_sec: float = 0.4
+    entry_initial_tolerance_sec: float = 1.0
+    outsider_min_sec: float = 0.6
+    outsider_min_score: float = 0.45
+    outsider_min_height_frac: float = 0.18
+    outsider_birth_window_sec: float = 6.0
+    outsider_working_lead_sec: float = 8.0
+    client_seated_height_ratio: float = 0.75
+    client_settle_sec: float = 2.0
+    max_seated_aspect_ratio: float = 2.1
+    safe_supervision_margin_frac: float = 0.08
 
 
 @dataclass
@@ -100,6 +172,7 @@ class PipelineConfig:
     ev02: Ev02Config = field(default_factory=Ev02Config)
     evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     rules: RuleEngineConfig = field(default_factory=RuleEngineConfig)
+    triggers: TriggerConfig = field(default_factory=TriggerConfig)
     #: fixed workplace rectangle as frame fractions, disables automatic zone inference
     post_zone_override: tuple[float, float, float, float] | None = None
     max_events: int = 6
@@ -121,11 +194,24 @@ class PipelineConfig:
             "ev02": Ev02Config,
             "evidence": EvidenceConfig,
             "rules": RuleEngineConfig,
+            "triggers": TriggerConfig,
         }
         for key, klass in nested.items():
             if key in data and isinstance(data[key], dict):
                 allowed = {f.name for f in fields(klass)}
                 kwargs[key] = klass(**{k: v for k, v in data[key].items() if k in allowed})
+        if "rules" in kwargs:
+            raw_types = data["rules"].get("types", {})
+            policies = _rule_policies()
+            for code, raw in raw_types.items():
+                if code not in policies or not isinstance(raw, dict):
+                    raise ValueError(f"invalid rule policy: {code}")
+                values = asdict(policies[code])
+                values.update(raw)
+                policies[code] = RulePolicy(**values)
+                if policies[code].min_frames < 1 or policies[code].min_sec < 0 or policies[code].clear_frames < 1 or policies[code].clear_sec < 0 or not 0 <= policies[code].threshold <= 1:
+                    raise ValueError(f"invalid stability settings: {code}")
+            kwargs["rules"].types = policies
         for key in ("post_zone_override", "max_events", "merge_gap_sec", "prefer_absence_event"):
             if key in data:
                 kwargs[key] = data[key]

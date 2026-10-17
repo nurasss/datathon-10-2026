@@ -60,7 +60,8 @@ def oracle_inputs(rows: list[dict], duration: float):
         start = float(row["start_sec"])
         end = min(duration-0.05, float(row["end_sec"]))
         if code == "OUTSIDER":
-            triggers.append(Trigger("outsider", start, end, 9001, {"reason": "oracle_annotated_entry", "zone_reached_sec": start}))
+            triggers.append(Trigger("outsider", start, end, 9001, {"reason": "oracle_annotated_entry", "zone_reached_sec": start,
+                "support_times": [round(start+i*.2, 4) for i in range(int((end-start)*5)+1)]}))
         elif code.startswith("LEAVE_") or code == "SAFE_OPEN":
             triggers.append(Trigger("cashier_leave", start, end, 9000, {"source": "oracle_annotation"}))
         elif code == "DOOR_OPEN":
@@ -69,9 +70,11 @@ def oracle_inputs(rows: list[dict], duration: float):
         for i in range(count):
             t = round(min(end, start + i*0.2), 4)
             scene = scenes_by_t.setdefault(t, SceneState(t, None, [], None, None, None))
-            presence[t] = {"cashier_present": True, "cashier_seated": True, "source": "oracle_annotation"}
+            absent = code.startswith("LEAVE_") or code == "SAFE_OPEN"
+            presence[t] = {"cashier_present": not absent, "cashier_seated": not absent,
+                           "cashier_near_safe": False if absent else None, "source": "oracle_annotation"}
             text = " ".join(row.get(k, "") for k in ("observed", "type_name", "notes")).lower()
-            item = {"LEAVE_VALUABLES": "valuables_bag" if "сумк" in text else "banknotes",
+            item = {"LEAVE_VALUABLES": "cash_bag" if "сумк" in text else "cash",
                     "PERSONAL_ITEMS": "clothing_or_bag" if "сумк" in text or "одежд" in text else "cup",
                     "PHONE_USE": "phone"}.get(code)
             if item:

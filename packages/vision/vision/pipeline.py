@@ -16,7 +16,7 @@ from .detector import NanoDetConfig, NanoDetPersonDetector, PersonDetector
 from .evidence import encode_frame
 from .rule_engine import evaluate_rules
 from .tracking import track_people
-from .triggers import build_triggers
+from .triggers import at_workplace, build_triggers, workplace_model
 from .types import AnalysisResult, FrameObservation, VideoMeta, ZoneSpec
 from .videoprobe import FrameReader, VideoProbeError, probe
 from .zones import infer_zones
@@ -180,20 +180,60 @@ class VideoAnalyzer:
         dx1, dy1, dx2, dy2 = self.cfg.zones.door_rect
         door = ZoneSpec("door", w*dx1, h*dy1, w*dx2, h*dy2, 0.3, "geometry_prior")
         zones.append(door)
-        _, coarse_assignments = track_people(list(coarse.values()), post, door, w, h)
+        coarse_tracks, coarse_assignments = track_people(list(coarse.values()), post, door, w, h, self.cfg.triggers)
         window_observations = [FrameObservation(o.t, o.frame_index,
             [d for _, d in coarse_assignments.get(o.frame_index, [])], motion=o.motion) for o in coarse.values()]
         windows = candidate_windows(window_observations, post, meta.duration_sec, self.cfg.sampling, h)
+        coarse_actions = build_triggers(list(coarse.values()), coarse_tracks, coarse_assignments, post, w, h,
+                                       cfg=self.cfg.triggers, door=door)
+        padding = self.cfg.sampling.window_padding_sec
+        for action in coarse_actions:
+            if action.kind in {"cashier_leave", "cashier_enter", "person_enter"}:
+                windows.append([max(0, action.t-padding), min(meta.duration_sec, action.t+padding)])
+                confirm = action.facts.get("confirmed_at")
+                if confirm is not None:
+                    windows.append([max(0, confirm-padding), min(meta.duration_sec, confirm+padding)])
+        merged_windows = []
+        for a, b in sorted(windows):
+            if merged_windows and a <= merged_windows[-1][1]:
+                merged_windows[-1][1] = max(merged_windows[-1][1], b)
+            else:
+                merged_windows.append([a, b])
+        windows = merged_windows
         observations = dict(coarse)
         scene_states = []
         dense_keys = set()
         batch_frames, batch_times, batch_detections = [], [], []
-        context = {"desk_box": (post.x1/w, post.y1/h, post.x2/w, post.y2/h),
-                   "zones": [z.as_dict() for z in zones], "bbox_format": "normalized_xyxy"}
+        context = {"zones": [z.as_dict() for z in zones], "bbox_format": "normalized_xyxy"}
 
         def scene_batch():
             if not batch_frames:
                 return
+            if "ref_frame" not in context:
+                # The scene team evaluates against one clip reference. Resetting
+                # it every batch makes an open door become the new 'closed' view.
+                from .scene.desk import DeskItemDetector
+                from .scene.door import DoorStateDetector
+                from .scene.safe import SafeStateDetector
+                reference = batch_frames[0]
+                context["ref_frame"] = reference
+                full_dets = [normalized_detection(d, w, h) for ds, _ in all_detections.values()
+                             for d in ds if d.score >= self.cfg.detector.min_score]
+                context["desk_box"] = DeskItemDetector().localize_desk(reference, full_dets)
+                context["door_box"] = DoorStateDetector().localize_door(reference)
+                context["safe_box"] = SafeStateDetector().localize_safe(reference, context["desk_box"])
+                laptops = [d["box"] for d in full_dets if d["cls"] == "laptop"]
+                if laptops:
+                    laptop = tuple(float(v) for v in np.median(laptops, axis=0))
+                    context["stationary_boxes"] = [laptop]
+                    # The foreground meeting table is often the highest-score
+                    # COCO table. The cashier's surface is anchored by equipment,
+                    # not by that unrelated foreground rectangle or a person box.
+                    zc = self.cfg.zones
+                    context["desk_box"] = (max(0, laptop[0]-zc.desk_laptop_side_margin),
+                        max(0, laptop[1]-zc.desk_laptop_top_margin),
+                        min(1, laptop[2]+zc.desk_laptop_side_margin),
+                        min(1, laptop[3]+zc.desk_laptop_bottom_margin))
             states = scene_state.analyze_scene(batch_frames, batch_times, batch_detections, context=context)
             if len(states) != len(batch_times):
                 raise AnalysisError("scene_state вернул неверное число состояний", "SCENE_CONTRACT_ERROR")
@@ -242,16 +282,23 @@ class VideoAnalyzer:
         for i, obs in enumerate(observations):
             obs.frame_index = i
         t0 = time.perf_counter()
-        tracks, assignments = track_people(observations, post, door, w, h)
-        triggers = build_triggers(observations, tracks, assignments, post, w, h, self.cfg.rules.min_outsider_sec)
+        tracks, assignments = track_people(observations, post, door, w, h, self.cfg.triggers)
+        triggers = build_triggers(observations, tracks, assignments, post, w, h, cfg=self.cfg.triggers, door=door)
         trace, presence = [], {}
         scenes_at = {round(s.t, 4): s for s in scene_states}
-        cashier_heights = [d.height for tr in tracks if tr.role == "cashier" for _, _, d in tr.history if post.contains(*d.center)]
-        seat_height = float(np.median(cashier_heights)) if cashier_heights else 0
+        seat = workplace_model(tracks, post, w, h, self.cfg.triggers)
         for obs in observations:
             people = assignments.get(obs.frame_index, [])
             cashier = [d for tr, d in people if tr.role == "cashier"]
-            p = {"cashier_present": bool(cashier), "cashier_seated": any(post.contains(*d.center) and d.height <= seat_height*1.25 for d in cashier)}
+            p = {"cashier_present": bool(cashier), "cashier_seated": any(at_workplace(d, seat, h, self.cfg.triggers, seated=True) for d in cashier),
+                 "cashier_at_workplace": any(at_workplace(d, seat, h, self.cfg.triggers) for d in cashier)}
+            safe_box = context.get("safe_box")
+            p["cashier_near_safe"] = None
+            if safe_box is not None:
+                margin = self.cfg.triggers.safe_supervision_margin_frac
+                p["cashier_near_safe"] = any(
+                    d.x2/w >= safe_box[0]-margin and d.x1/w <= safe_box[2]+margin and
+                    d.y2/h >= safe_box[1]-margin and d.y1/h <= safe_box[3]+margin for d in cashier)
             presence[obs.t] = p
             if options.keep_trace:
                 dets, phase = all_detections[obs.t]
@@ -259,7 +306,8 @@ class VideoAnalyzer:
                 trace.append({"t": obs.t, "pass": phase, **p,
                     "persons": [{"track_id": tr.track_id, "bbox": normalized_detection(d, w, h)["box"],
                                  "role": tr.role, "score": d.score} for tr, d in people],
-                    "detections": norm,
+                     "detections": norm,
+                     "tracking_detections": [normalized_detection(d, w, h) for d in dets if d.label == "person"],
                     "desk_objects": [d for d in norm if d["cls"] in DESK_CLASSES and post.contains((d["box"][0]+d["box"][2])*w/2, (d["box"][1]+d["box"][3])*h/2)],
                     "scene": asdict(scenes_at[obs.t]) if obs.t in scenes_at else None})
         events = evaluate_rules(triggers, scene_states, presence, meta.duration_sec, self.registry, self.cfg.rules)[:self.cfg.max_events]
@@ -281,8 +329,15 @@ class VideoAnalyzer:
         quality["coarse_detector"] = self.coarse_detector.name
         quality["dense_detector"] = self.detector.name
         quality["frame_cache"] = {"used": cache_enabled, "bytes": cache_bytes if cache_enabled else 0, "max_mb": self.cfg.sampling.cache_max_mb, "jpeg_quality": 95}
-        quality["room_count_prior"] = {"min_person_height_frac": 0.16, "staff_side_from_cashier_head_plus_height_frac": .12}
+        quality["room_count_prior"] = {"min_person_height_frac": self.cfg.triggers.outsider_min_height_frac,
+            "door_crossing": "configured_staff_door_prior_plus_body_and_direction_not_authorization",
+            "opposite_client": "seated_history_and_no_new_door_birth"}
         quality["cashier_seated_source"] = "person_box_height_proxy_not_pose_model"
+        quality["frame_size"] = [w, h]
+        quality["workplace_model"] = seat
+        quality["cashier_track_aliases"] = {str(tr.track_id): tr.source_track_ids for tr in tracks if tr.role == "cashier"}
+        quality["scene_context"] = {k: v for k, v in context.items() if k != "ref_frame"}
+        quality["scene_reference"] = "first_dense_frame_of_clip_not_batch"
         if options.keep_trace:
             quality["trace"] = trace
         warnings = ["door_zone_uncalibrated"]
@@ -297,10 +352,12 @@ class VideoAnalyzer:
             detector=self.detector.name, timings=timings, quality=quality)
 
     def _attach_evidence(self, events, reader):
+        timestamps = sorted({t for event in events for t in event.evidence_times[:self.cfg.evidence.max_frames_per_event]})
+        originals = reader.read_frames_at(timestamps)
         for event in events:
             frames = []
             for t in event.evidence_times[:self.cfg.evidence.max_frames_per_event]:
-                frame = reader.read_frame_at(t)
+                frame = originals.get(t)
                 if frame is not None:
                     frames.append(encode_frame(frame, t, max_width=self.cfg.evidence.max_width, quality=self.cfg.evidence.jpeg_quality))
             event.meta["evidence"] = frames

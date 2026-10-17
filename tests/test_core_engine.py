@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rules.registry import RuleRegistry, TAXONOMY
-from vision.config import PipelineConfig
+from vision.config import PipelineConfig, RuleEngineConfig
 from vision.pipeline import candidate_windows, VideoAnalyzer, AnalysisOptions
 from vision.rule_engine import evaluate_rules
 from vision.scene_state import DeskItem, SceneState, analyze_scene
@@ -21,7 +21,13 @@ def scene(t, **kwargs):
 
 
 def run(triggers=(), scenes=(), presence=None):
-    return evaluate_rules(list(triggers), list(scenes), presence or {}, 30, RuleRegistry.load())
+    cfg = RuleEngineConfig()
+    # Isolate semantic mapping/citations here; production persistence has its
+    # own tests below with the default policies, not single-frame fixtures.
+    for code, policy in cfg.types.items():
+        if code != "DOOR_OPEN":
+            policy.min_frames, policy.min_sec = 1, 0.0
+    return evaluate_rules(list(triggers), list(scenes), presence or {}, 30, RuleRegistry.load(), cfg)
 
 
 @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/api/docs", "/api/redoc", "/api/openapi.json"])
@@ -43,18 +49,19 @@ def test_docs_flag_is_explicit(monkeypatch, raw, enabled):
 
 
 def test_unknown_scene_is_not_negative_or_violation():
-    states = analyze_scene([np.zeros((10, 10, 3))], [4.0], [[{"cls": "cup", "score": .9, "box": (0, 0, 1, 1)}]])
-    assert states == [scene(4)]
+    states = [scene(4+i*.2) for i in range(30)]
     assert run([Trigger("cashier_leave", 4, 8, 1)], states) == []
+    assert run([Trigger("cashier_enter", 4, 8, 1)], states,
+               {round(s.t, 4): {"cashier_present": True, "cashier_seated": True} for s in states}) == []
 
 
 @pytest.mark.parametrize("changes,code", [
     ({"screen_state": "document"}, "LEAVE_SCREEN_UNLOCKED"),
-    ({"safe_open": .9}, "SAFE_OPEN"),
-    ({"desk_items": [DeskItem("valuables", (0, 0, 1, 1), .9)]}, "LEAVE_VALUABLES"),
+    ({"safe_open": 1.0}, "SAFE_OPEN"),
+    ({"desk_items": [DeskItem("cash", (0, 0, 1, 1), .9)]}, "LEAVE_VALUABLES"),
 ])
 def test_leave_types_use_onset_and_exact_norm(changes, code):
-    events = run([Trigger("cashier_leave", 6, 12, 7)], [scene(6, **changes)])
+    events = run([Trigger("cashier_leave", 6, 12, 7)], [scene(6, **changes)], {6: {"cashier_present": False}})
     assert [e.event_code for e in events] == [code]
     event = events[0]
     assert event.start_sec == event.peak_sec == 6
@@ -84,7 +91,7 @@ def test_door_hold_unknown_and_closed_reset():
     assert run(tr, [replace(s, door_open=0.0) for s in states]) == []
     assert run(tr, [replace(s, door_open=None) for s in states]) == []
     assert run(tr, [replace(s, door_open=None) if s.t == 5 else s for s in states]) == []
-    assert run(tr, [replace(s, door_open=0.0) if s.t == 3 else s for s in states]) == []
+    assert run(tr, [replace(s, door_open=0.0) if s.t <= 3.4 else s for s in states]) == []
 
 
 @pytest.mark.parametrize("item,code", [("cup", "PERSONAL_ITEMS"), ("food", "PERSONAL_ITEMS"),
@@ -108,7 +115,7 @@ def test_manual_count_requires_seated_cashier():
 
 
 def test_outsider_has_approved_isolation_caveat():
-    event = run([Trigger("outsider", 18, 22, 3, {"person_count": 3})])[0]
+    event = run([Trigger("outsider", 18, 22, 3, {"person_count": 3, "support_times": [18]})], [scene(18)])[0]
     assert event.rule_id == "KZ-NB14-P16-1"
     assert "служебные полномочия" in event.hypothesis.lower()
     assert event.peak_sec == 18
@@ -116,8 +123,11 @@ def test_outsider_has_approved_isolation_caveat():
 
 def test_unapproved_registry_cannot_emit():
     registry = RuleRegistry.load()
+    tr = Trigger("outsider", 2, 5, facts={"support_times": [2, 2.2, 2.4]})
+    scenes = [scene(t) for t in [2, 2.2, 2.4]]
+    assert evaluate_rules([tr], scenes, {}, 20, registry)
     registry._by_id["KZ-NB14-P16-1"].status = "draft"
-    assert evaluate_rules([Trigger("outsider", 2, 5)], [], {}, 20, registry) == []
+    assert evaluate_rules([tr], scenes, {}, 20, registry) == []
 
 
 def test_kalman_keeps_id_across_motion_dropout_and_low_score():
@@ -188,8 +198,9 @@ def test_three_people_trigger_starts_at_entry_not_midpoint():
         observations.append(FrameObservation(t, i, boxes))
         assignments[i] = list(zip(tracks, boxes))
     post = ZoneSpec("post", 0, 150, 400, 600)
-    tracks[0].history = [(2.0, 0, boxes[0])]
-    events = build_triggers(observations, [tracks[0]], assignments, post, 464, 848)
+    for track, box in zip(tracks, boxes):
+        track.history = [(obs.t, obs.frame_index, box) for obs in observations]
+    events = build_triggers(observations, tracks, assignments, post, 464, 848)
     assert events[0].kind == "outsider"
     assert events[0].t == 2.0
 

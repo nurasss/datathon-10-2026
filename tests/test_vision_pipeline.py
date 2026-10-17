@@ -14,7 +14,10 @@ from rules.registry import RuleRegistry
 
 
 @pytest.fixture()
-def analyzer(project_root: Path) -> VideoAnalyzer:
+def analyzer(project_root: Path, monkeypatch) -> VideoAnalyzer:
+    from vision.scene_state import SceneState
+    monkeypatch.setattr("vision.scene_state.analyze_scene", lambda frames, timestamps, detections, context=None: [
+        SceneState(t, None, [], None, None, None) for t in timestamps])
     cfg = PipelineConfig.load(project_root / "configs" / "inference.default.json")
     return VideoAnalyzer(
         cfg=cfg,

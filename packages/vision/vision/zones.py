@@ -56,6 +56,12 @@ class ZoneConfig:
     fallback_post_rect: tuple[float, float, float, float] = (0.30, 0.30, 0.72, 0.92)
     #: uncalibrated doorway prior; override for a different camera, not a door detector
     door_rect: tuple[float, float, float, float] = (0.0, 0.05, 0.35, 0.42)
+    max_person_center_y: float = 0.72
+    min_person_score: float = 0.3
+    min_person_height_frac: float = 0.12
+    desk_laptop_side_margin: float = 0.4
+    desk_laptop_top_margin: float = 0.05
+    desk_laptop_bottom_margin: float = 0.12
     #: weight threshold relative to the peak cell when growing the post zone
     cluster_rel_threshold: float = 0.35
     #: the workplace rectangle is clamped to this factor of a typical person box
@@ -107,6 +113,8 @@ def infer_zones(
             if det.source == "motion_blob":
                 continue
             cx, cy = det.center
+            if det.score < cfg.min_person_score or cy > cfg.max_person_center_y*height or det.height < cfg.min_person_height_frac*height:
+                continue
             gx = int(np.clip(cx / max(width, 1) * GRID_W, 0, GRID_W - 1))
             gy = int(np.clip(cy / max(height, 1) * GRID_H, 0, GRID_H - 1))
             grid[gy, gx] += max(1.0, det.area / (width * height) * 50.0)

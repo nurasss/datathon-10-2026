@@ -225,23 +225,36 @@ class FrameReader:
         sequential iterator state so evidence timestamps stay correct.
         """
 
-        cap = cv2.VideoCapture(self.path)
+        return self.read_frames_at([t_sec]).get(t_sec)
+
+    def read_frames_at(self, timestamps: list[float]) -> dict[float, Optional[np.ndarray]]:
+        """One deterministic source decode for an entire evidence batch.
+
+        Independent of the analysis iterator; single-frame and batch extraction
+        use the same rounded source-frame indices, including duplicate times.
+        """
+        cap = cv2.VideoCapture(self.path, cv2.CAP_FFMPEG, [cv2.CAP_PROP_N_THREADS, 1])
+        result: dict[float, Optional[np.ndarray]] = {}
         if not cap.isOpened():
-            return None
+            return dict.fromkeys(timestamps)
         try:
-            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t_sec) * 1000.0)
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                # Fall back to sequential search from the start (small files only).
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                fps = self.fps
-                target = int(round(max(0.0, t_sec) * fps))
-                for _ in range(max(0, target)):
+            decoded = 0
+            previous_index = -1
+            previous_frame = None
+            exhausted = False
+            for t_sec in sorted(set(timestamps)):
+                target = int(round(max(0.0, t_sec)*self.fps))
+                if target == previous_index:
+                    result[t_sec] = previous_frame
+                    continue
+                while decoded < target and not exhausted:
                     if not cap.grab():
-                        return None
-                ok, frame = cap.read()
-            if not ok:
-                return None
-            return frame
+                        exhausted = True
+                    decoded += 1
+                ok, frame = cap.read() if not exhausted else (False, None)
+                decoded += 1
+                result[t_sec] = frame if ok else None
+                previous_index, previous_frame = target, result[t_sec]
+            return result
         finally:
             cap.release()

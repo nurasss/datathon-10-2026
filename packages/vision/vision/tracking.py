@@ -25,6 +25,7 @@ class PersonTrack:
     x: np.ndarray = field(default_factory=lambda: np.zeros(8))
     p: np.ndarray = field(default_factory=lambda: np.eye(8) * 100)
     clock: float = 0.0
+    source_track_ids: list[int] = field(default_factory=list)
 
     def predict(self, t: float) -> Detection:
         dt = max(0.0, t - self.clock)
@@ -104,31 +105,89 @@ class PersonTracker:
             self.tracks.append(tr)
 
 
-def track_people(observations, post: ZoneSpec, door: ZoneSpec, width: int, height: int):
+def track_people(observations, post: ZoneSpec, door: ZoneSpec, width: int, height: int, cfg=None):
+    from .config import TriggerConfig
+    cfg = cfg or TriggerConfig()
     tracker = PersonTracker()
     for obs in observations:
-        tracker.update(obs)
+        usable = [d for d in obs.detections if d.center[1] <= cfg.max_person_center_y*height
+                  and d.height >= cfg.min_person_height_frac*height]
+        tracker.update(FrameObservation(obs.t, obs.frame_index, usable))
     tracks = [tr for tr in tracker.tracks if len(tr.history) >= 3 and tr.history[-1][0]-tr.history[0][0] >= 0.35]
     # Integrate time, not frame count: windows otherwise bias the cashier choice.
     def occupancy(tr):
         total = 0.0
         for (t, _, d), (tn, _, _) in zip(tr.history, tr.history[1:]):
-            if post.contains(*d.center):
-                total += min(tn-t, 1.0) * (d.area / (width*height)) ** 0.5
+            if post.contains(*d.center) and d.score >= cfg.min_person_score:
+                total += min(tn-t, 1.0) * (d.area / (width*height)) ** 0.5 * d.score
         return total
     primary = max(tracks, key=occupancy, default=None)
     if primary is not None and occupancy(primary) > 0.1:
         primary.role = "cashier"
-        # Recover a fragmented cashier only with a non-overlapping time interval
-        # and sustained presence at the same seat. Simultaneous people stay distinct.
+        # Link temporal/body-shape fragments, but never merge two independently
+        # co-present high-confidence people. Birth at the door is not a role.
         cashier_tracks = [primary]
-        for tr in sorted(tracks, key=occupancy, reverse=True):
-            if tr is primary or occupancy(tr) < 0.15:
-                continue
-            overlap = any(min(tr.history[-1][0], c.history[-1][0]) >= max(tr.history[0][0], c.history[0][0]) for c in cashier_tracks)
-            if not overlap and sum(post.contains(*d.center) for _, _, d in tr.history) / len(tr.history) > 0.65:
-                tr.role = "cashier"
-                cashier_tracks.append(tr)
+        def linked(a, b):
+            ah = {i: (t, d) for t, i, d in a.history}
+            shared = [(ah[i][0], ah[i][1], d) for _, i, d in b.history if i in ah]
+            independent = [t for t, da, db in shared if min(da.score, db.score) >= .45
+                           and da.iou(db) < .1 and np.linalg.norm(np.array(da.center)-db.center) > .5*min(da.height, db.height)]
+            if len(independent) > 1 and independent[-1]-independent[0] >= cfg.independent_overlap_sec:
+                return False
+            earlier, later = sorted((a, b), key=lambda tr: tr.history[0][0])
+            start, _, first = later.history[0]
+            nearby = [(t, d) for t, _, d in earlier.history if abs(t-start) <= cfg.fragment_gap_sec]
+            if not nearby:
+                return False
+            _, prior = min(nearby, key=lambda pair: abs(pair[0]-start))
+            distance = np.linalg.norm(np.array(first.center)-prior.center) / max(first.height, prior.height, 1)
+            return first.iou(prior) >= cfg.fragment_iou or distance <= cfg.fragment_distance_ratio
+        for _ in range(len(tracks)):
+            added = False
+            for tr in tracks:
+                if tr.role == "cashier":
+                    continue
+                if any(linked(c, tr) for c in cashier_tracks):
+                    tr.role = "cashier"
+                    cashier_tracks.append(tr)
+                    added = True
+            if not added:
+                break
+        # One logical cashier identity, one actual measurement per frame. Keep
+        # original IDs as provenance instead of exposing ID switches as entrants.
+        per_frame = {}
+        for tr in cashier_tracks:
+            for t, idx, d in tr.history:
+                if idx not in per_frame or d.score > per_frame[idx][2].score:
+                    per_frame[idx] = (t, idx, d)
+        merged = PersonTrack(primary.track_id, role="cashier",
+                             history=sorted(per_frame.values()), source_track_ids=[tr.track_id for tr in cashier_tracks])
+        others = [tr for tr in tracks if tr.role != "cashier"]
+        groups = []
+        for tr in sorted(others, key=lambda tr: tr.history[0][0]):
+            target = None
+            for group in groups:
+                # Non-cashier re-ID is deliberately stricter: an exit/new box
+                # must not be mistaken for a fresh entrance later in a session.
+                if any(max(0, tr.history[0][0]-old.history[-1][0], old.history[0][0]-tr.history[-1][0]) <= cfg.noncashier_fragment_gap_sec
+                       and linked(old, tr) and any(abs(t-tr.history[0][0]) <= cfg.fragment_gap_sec and
+                       d.iou(tr.history[0][2]) >= cfg.fragment_iou for t, _, d in old.history) for old in group):
+                    target = group
+                    break
+            if target is None:
+                groups.append([tr])
+            else:
+                target.append(tr)
+        merged_others = []
+        for group in groups:
+            by_frame = {}
+            for tr in group:
+                for t, idx, d in tr.history:
+                    if idx not in by_frame or d.score > by_frame[idx][2].score:
+                        by_frame[idx] = (t, idx, d)
+            merged_others.append(PersonTrack(group[0].track_id, history=sorted(by_frame.values()),
+                                            source_track_ids=[tr.track_id for tr in group]))
+        tracks = merged_others + [merged]
     for tr in tracks:
         t0 = tr.history[0][0]
         early = [(t, d) for t, _, d in tr.history if t <= t0 + 1.2]

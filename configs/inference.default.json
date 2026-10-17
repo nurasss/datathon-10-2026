@@ -65,7 +65,34 @@
     "jpeg_quality": 85
   },
   "post_zone_override": null,
-  "rules": {"scene_threshold": 0.7, "door_hold_sec": 3.0, "min_outsider_sec": 0.6, "min_scene_sec": 0.6},
+  "triggers": {
+    "min_person_score": 0.30, "max_person_center_y": 0.72, "min_person_height_frac": 0.12,
+    "fragment_gap_sec": 3.5, "noncashier_fragment_gap_sec": 0.8, "fragment_iou": 0.20, "fragment_distance_ratio": 0.55,
+    "independent_overlap_sec": 0.6, "seat_calibration_sec": 6.0, "entry_calibration_sec": 6.0,
+    "stand_height_ratio": 1.4, "stand_head_delta_frac": 0.05,
+    "seat_radius_x": 0.45, "seat_radius_y": 0.5, "absence_sec": 2.0,
+    "departure_hold_sec": 1.0, "departure_min_frames": 3, "onset_lookback_sec": 2.0, "seated_hold_sec": 1.0, "seated_confirmation_score": 0.4,
+    "gap_tolerance_sec": 0.8, "entry_travel_frac": 0.05, "entry_inward_frac": 0.015,
+    "entry_direction_window_sec": 4.0, "entry_progress_quantile": 0.9, "entry_body_frames": 3, "entry_body_hold_sec": 0.4,
+    "entry_initial_tolerance_sec": 1.0, "outsider_min_sec": 0.6,
+    "outsider_min_score": 0.45, "outsider_min_height_frac": 0.18,
+    "outsider_birth_window_sec": 6.0,
+    "outsider_working_lead_sec": 8.0, "client_seated_height_ratio": 0.75, "client_settle_sec": 2.0,
+    "max_seated_aspect_ratio": 2.1, "safe_supervision_margin_frac": 0.08
+  },
+  "rules": {
+    "leave_observation_sec": 3.0, "entry_observation_sec": 8.0, "merge_gap_sec": 3.0,
+    "types": {
+      "LEAVE_VALUABLES": {"enabled": true, "threshold": 0.75, "min_frames": 3, "min_sec": 0.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
+      "LEAVE_SCREEN_UNLOCKED": {"enabled": true, "threshold": 0.75, "min_frames": 3, "min_sec": 0.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
+      "SAFE_OPEN": {"enabled": true, "threshold": 0.95, "min_frames": 8, "min_sec": 1.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
+      "PERSONAL_ITEMS": {"enabled": true, "threshold": 0.88, "min_frames": 12, "min_sec": 3.0, "max_gap_sec": 0.45, "lookback_sec": 2.0},
+      "PHONE_USE": {"enabled": true, "threshold": 0.75, "min_frames": 3, "min_sec": 0.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
+      "OUTSIDER": {"enabled": true, "threshold": 0.45, "min_frames": 3, "min_sec": 0.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
+      "DOOR_OPEN": {"enabled": true, "threshold": 0.80, "min_frames": 12, "min_sec": 3.0, "max_gap_sec": 0.45, "lookback_sec": 2.0, "clear_frames": 3, "clear_sec": 0.4},
+      "MANUAL_COUNT": {"enabled": true, "threshold": 0.95, "min_frames": 12, "min_sec": 3.0, "max_gap_sec": 0.45, "lookback_sec": 2.0}
+    }
+  },
   "max_events": 6,
   "merge_gap_sec": 3.0,
   "prefer_absence_event": true
