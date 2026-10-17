@@ -1,20 +1,23 @@
 # ForteVision · ForteBank Datathon 26
 
 Локальный CPU-анализ `.mov`: FastAPI + SQLite + отдельные процессы NanoDet / ONNX Runtime.
-Без облачных AI API, распознавания лиц и анализа звука. Рабочий путь задачи 3:
+Без облачных AI API, распознавания лиц и анализа звука. Рабочий путь задач 3–4:
 редкий проход → кандидатные окна → плотный проход, треки и роли, типизированный
 движок правил. Обычный уход с пустым столом сам по себе не является нарушением.
 `scene_state.py` — интегрированный модуль визуальных состояний. Правила требуют
 устойчивого признака на плотных кадрах; пороги и включение каждого типа задаются
 в `configs/inference.default.json` → `rules.types`.
 
+Результат интеграционной итерации и известные регрессии:
+[`docs/TASK4_REPORT.md`](docs/TASK4_REPORT.md). Это не принятый детектор всех типов нарушений.
+
 ## Запуск на этом Mac
 
 ```bash
 cd /Users/nuras/Desktop/datathon/fv-core
-# Уже созданное .venv можно использовать без переустановки.
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r apps/api/requirements.txt
+# В этом worktree используется уже установленное общее окружение.
+export FV_PYTHON=/Users/nuras/Desktop/datathon/forte-vision/.venv/bin/python
+# Для отдельной чистой установки зависимости: apps/api/requirements.txt.
 # ffprobe/ffmpeg рекомендованы для проверки контейнера (brew install ffmpeg).
 
 # .env уже создан при локальной проверке, содержит случайные ключи, игнорируется Git.
@@ -22,7 +25,7 @@ python3.12 -m venv .venv
 set -a
 source .env
 set +a
-scripts/run_server.sh
+FV_PORT=8001 scripts/run_server.sh
 ```
 
 Для тестирования worktree задайте `FV_PORT=8001` (основной сервер не трогать).
@@ -40,11 +43,11 @@ scripts/run_server.sh
 # После source .env:
 curl -sS -H "X-API-Key: ${FV_API_KEYS%%,*}" \
   -F 'file=@/Users/nuras/Desktop/datathon/data_raw/open/videos/Х-20.mov' \
-  http://localhost:8000/api/v1/analyze
+  http://localhost:8001/api/v1/analyze
 # {"job_id":"..."}, HTTP 202 — без ожидания анализа
 
 curl -sS -H "X-API-Key: ${FV_API_KEYS%%,*}" \
-  http://localhost:8000/api/v1/jobs/JOB_ID
+  http://localhost:8001/api/v1/jobs/JOB_ID
 ```
 
 - `processing` → `done` или `failed`. Неизвестный id: 404; неверный/отсутствующий ключ: 401.
@@ -73,13 +76,14 @@ curl -sS -H "X-API-Key: ${FV_API_KEYS%%,*}" \
 ## Тесты и воспроизводимый замер
 
 ```bash
-.venv/bin/python -m pytest -q
+"$FV_PYTHON" -m pytest -q
 
 # В другом терминале, при работающем сервере:
 set -a
 source .env
 set +a
-.venv/bin/python scripts/acceptance.py \
+"$FV_PYTHON" scripts/acceptance.py \
+  --url http://127.0.0.1:8001 \
   --videos /Users/nuras/Desktop/datathon/data_raw/open/videos
 sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
 ```
@@ -98,7 +102,8 @@ base64 сокращён до 40 символов. Полные ответы и �
 - `packages/vision`: ORT CPU, двухпроходность, IoU/Kalman, триггеры, движок, кадры; веса локальные.
 - `packages/rules`: проверенный куратором реестр и утверждённая таксономия; выдаются только правила `approved`.
 - `scripts/dev_*`: инструменты разработки, **не используются** API и не читают labels
-  при анализе загруженного видео. Обучение/подбор порогов в этой задаче не выполнялись.
+  при анализе загруженного видео. Веса не обучались; пороги задачи 4 и результаты
+  целевой настройки зафиксированы в конфиге и отчёте, а не считаются независимой валидацией.
 - `infra`: необязательный Docker (`docker compose -f infra/docker-compose.yml up --build`);
   основная проверенная конфигурация — нативный запуск на Mac, Docker не тестировался.
 - `docs/DEPENDENCIES.md`: полный список установленного окружения, лицензии и SHA256 весов.
