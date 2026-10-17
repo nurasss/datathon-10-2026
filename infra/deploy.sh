@@ -161,7 +161,8 @@ if [[ $ROLLBACK -eq 0 && $failures -eq 0 ]]; then
       else
         # Ветку распаковываем и в dry-run: иначе diff/хеш зависимостей считались бы по рабочему
         # дереву репозитория (другая ветка) и план был бы неверным. Временный каталог удаляется trap'ом.
-        STAGING="$(mktemp -d "${TMPDIR:-/tmp}${TMPDIR:+/}fv-deploy.XXXXXX" 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/fv-deploy.XXXXXX")"
+        staging_root="${TMPDIR:-/tmp}"; staging_root="${staging_root%/}"   # TMPDIR приходит со слэшем на конце
+        STAGING="$(mktemp -d "$staging_root/fv-deploy.XXXXXX")"
         if git -C "$REPO" archive --format=tar "$BRANCH" | tar -xf - -C "$STAGING"; then
           SRC="$STAGING"
           fv_info "  ✓ git archive: $BRANCH @ ${COMMIT:0:7}"
