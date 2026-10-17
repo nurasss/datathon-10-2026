@@ -92,10 +92,14 @@ fv_find_bin() {
   return 1
 }
 
-# fv_http_code <url> [timeout] — HTTP-код или 000
+# fv_http_code <url> [timeout] — HTTP-код или 000 (ровно три символа).
+# curl печатает 000 и при ошибке соединения, поэтому раньше получалось "000000"
+# (код + fallback) — нормализуем, иначе сравнение с "000" не срабатывает.
 fv_http_code() {
-  local url="$1" timeout="${2:-5}"
-  curl -s -o /dev/null -w '%{http_code}' --max-time "$timeout" "$url" 2>/dev/null || printf '000'
+  local url="$1" timeout="${2:-5}" code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "$timeout" "$url" 2>/dev/null)"
+  code="${code:0:3}"
+  printf '%s' "${code:-000}"
 }
 
 # fv_wait_http_ok <url> <seconds> — ждать, пока GET вернёт 2xx

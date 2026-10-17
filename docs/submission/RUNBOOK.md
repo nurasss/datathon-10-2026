@@ -150,6 +150,9 @@ $FV/infra/tunnel/public_url.sh      # ngrok API → метрики cloudflared �
 1. `pmset -g | grep SleepDisabled` — и `pgrep -fl 'caffeinate -dimsu'` (не должен уходить в сон).
 2. `launchctl print gui/$(id -u)/com.fortevision.api | grep -E 'state|pid'` — `running`.
 3. `$FV/infra/healthcheck.sh --both` — PASS по локальному и публичному адресу.
+   Либо сразу финальная команда-сводка: `$FV/infra/release_gate.sh` — она включает
+   `healthcheck --both --strict-docs`, валидацию трёх сохранённых ответов, проверку ключа
+   и печатает публичный адрес, время и «готово/не готово».
 4. **Проверка большого файла** (обязательно, один раз):
    ```sh
    $FV/infra/healthcheck.sh --public --file "/Users/nuras/Desktop/datathon/data_raw/open/videos/Х-14.mov"

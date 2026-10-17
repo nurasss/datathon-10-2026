@@ -328,6 +328,19 @@ fi
 TARGET_FAILURES=0
 TARGET_TOTAL=0
 
+# curl_to <file> <args...> — HTTP-код или 000; выходной файл всегда существует.
+# Нужно потому, что curl печатает 000 при ошибке соединения, а файл при этом не создаётся:
+# без нормализации получалось "000000" и шум вида "head: ... No such file".
+curl_to() {
+  local file="$1"; shift
+  local code
+  code="$(curl -s -o "$file" -w '%{http_code}' "$@" 2>/dev/null)"
+  code="${code:0:3}"
+  [[ -n "$code" ]] || code=000
+  [[ -f "$file" ]] || : > "$file"
+  printf '%s' "$code"
+}
+
 check_target() {
   local label="$1" base="$2"
   local base_clean="${base%/}"
@@ -340,7 +353,7 @@ check_target() {
 
   # --- 1. health ---------------------------------------------------------------------
   local code
-  code="$(curl -s -o "$f.health.json" -w '%{http_code}' --max-time 15 "$base_clean/api/v1/health" 2>/dev/null || printf '000')"
+  code="$(curl_to "$f.health.json" --max-time 15 "$base_clean/api/v1/health")"
   if [[ "$code" == "200" ]]; then
     local health_json
     health_json="$(cat "$f.health.json" 2>/dev/null | tr -d '\n' | cut -c1-160)"
@@ -351,8 +364,8 @@ check_target() {
   fi
 
   # --- 2. 401 без ключа ----------------------------------------------------------------
-  code="$(curl -s -o "$f.noauth.json" -w '%{http_code}' --max-time 15 \
-        -X POST "$base_clean/api/v1/analyze" -F "file=@$CHECK_FILE;type=video/quicktime" 2>/dev/null || printf '000')"
+  code="$(curl_to "$f.noauth.json" --max-time 15 \
+        -X POST "$base_clean/api/v1/analyze" -F "file=@$CHECK_FILE;type=video/quicktime")"
   case "$code" in
     401|403) printf '  [2/6] POST /api/v1/analyze без ключа   %s%s%s  (верно: доступ закрыт)\n' "$C_GREEN" "$code" "$C_OFF" ;;
     000)     printf '  [2/6] POST /api/v1/analyze без ключа   %s000%s  соединение не установлено\n' "$C_RED" "$C_OFF"; failed=1 ;;
@@ -362,10 +375,10 @@ check_target() {
 
   # --- 3. POST с ключом ----------------------------------------------------------------
   t_start=$(date +%s)
-  code="$(curl -s -o "$f.accept.json" -w '%{http_code}' --max-time "$UPLOAD_TIMEOUT" \
+  code="$(curl_to "$f.accept.json" --max-time "$UPLOAD_TIMEOUT" \
         -X POST "$base_clean/api/v1/analyze" \
         -H "X-API-Key: $API_KEY" \
-        -F "file=@$CHECK_FILE;type=video/quicktime" 2>/dev/null || printf '000')"
+        -F "file=@$CHECK_FILE;type=video/quicktime")"
   local job_id
   job_id="$("$PY" -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("job_id") or "")
@@ -382,8 +395,8 @@ except Exception: print("")' "$f.accept.json" 2>/dev/null)"
   local job_done=0 elapsed=0 status=""
   if [[ -n "$job_id" ]]; then
     while (( elapsed < TIMEOUT )); do
-      code="$(curl -s -o "$f.job.json" -w '%{http_code}' --max-time 15 \
-            -H "X-API-Key: $API_KEY" "$base_clean/api/v1/jobs/$job_id" 2>/dev/null || printf '000')"
+      code="$(curl_to "$f.job.json" --max-time 15 \
+            -H "X-API-Key: $API_KEY" "$base_clean/api/v1/jobs/$job_id")"
       status="$("$PY" -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("status") or "")
 except Exception: print("")' "$f.job.json" 2>/dev/null)"

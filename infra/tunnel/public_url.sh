@@ -77,14 +77,26 @@ if [[ -n "${NGROK_DOMAIN:-}" ]]; then
   emit "https://$d"
 fi
 
-# 6) quick tunnel: адрес печатается cloudflared в лог.
+# 5) quick tunnel: адрес печатается cloudflared в лог.
 #    Смотрим и в настроенный FV_LOG_DIR, и в канонический каталог логов launchd-агента:
 #    stdout туннеля пишет plist (StandardOutPath), и он не обязан совпадать с FV_LOG_DIR.
-for f in "${FV_LOG_DIR:-}/tunnel.out.log" "${FV_LOG_DIR:-}/tunnel.err.log" \
-         "$HOME/Library/Logs/forte-vision/tunnel.out.log" "$HOME/Library/Logs/forte-vision/tunnel.err.log"; do
-  [[ -n "$f" && -f "$f" ]] || continue
+#    Логи могут содержать адреса УЖЕ УМЕРШИХ туннелей (в т.ч. чужих), поэтому кандидата
+#    обязательно проверяем на живость. Одного HTTP-кода мало: trycloudflare-хостнейм
+#    отвечает страницей ошибки Cloudflare. Требуем, чтобы наш сервис реально назвался:
+#    /api/v1/health отдаёт JSON с "service":"ForteVision".
+LOGS="$(ls -t \
+  "${FV_LOG_DIR:-}/tunnel.out.log" "${FV_LOG_DIR:-}/tunnel.err.log" \
+  "$HOME/Library/Logs/forte-vision/tunnel.out.log" "$HOME/Library/Logs/forte-vision/tunnel.err.log" \
+  2>/dev/null | awk '!seen[$0]++')"
+for f in $LOGS; do
+  [[ -f "$f" ]] || continue
   url="$(grep -Eo 'https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com' "$f" 2>/dev/null | tail -1)"
-  if [[ -n "$url" ]]; then emit "$url"; fi
+  [[ -n "$url" ]] || continue
+  body="$(curl -s --max-time 10 "$url/api/v1/health" 2>/dev/null | head -c 200)"
+  case "$body" in
+    *ForteVision*) emit "$url" ;;
+    *) fv_warn "public_url.sh: адрес из $f не подтвердился (мёртвый туннель или чужой сервис): $url" >&2 ;;
+  esac
 done
 
 exit 1
