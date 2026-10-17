@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Шаблон. install.sh подставляет @...@ и кладёт результат в ~/Library/LaunchAgents/ -->
+    <key>Label</key>
+    <string>com.fortevision.tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@FV_INFRA_ROOT@/infra/tunnel/run_tunnel.sh</string>
+    </array>
+
+    <!-- Провайдер, upstream и токены берутся из env-файла (права 600), а не из plist. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FV_APP_ROOT</key><string>@FV_APP_ROOT@</string>
+        <key>FV_INFRA_ROOT</key><string>@FV_INFRA_ROOT@</string>
+        <key>FV_ENV_FILE</key><string>@FV_ENV_FILE@</string>
+    </dict>
+
+    <key>RunAtLoad</key><true/>
+    <!-- ngrok бесплатного тарифа может разорвать сессию: launchd поднимет агент снова,
+         а статический домен останется тем же адресом для жюри. -->
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>ExitTimeOut</key><integer>10</integer>
+
+    <key>WorkingDirectory</key><string>@FV_INFRA_ROOT@</string>
+
+    <key>StandardOutPath</key><string>@FV_LOG_DIR@/tunnel.out.log</string>
+    <key>StandardErrorPath</key><string>@FV_LOG_DIR@/tunnel.err.log</string>
+</dict>
+</plist>

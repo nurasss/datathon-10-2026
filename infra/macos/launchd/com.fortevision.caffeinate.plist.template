@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Шаблон. install.sh подставляет @...@ и кладёт результат в ~/Library/LaunchAgents/ -->
+    <key>Label</key>
+    <string>com.fortevision.caffeinate</string>
+
+    <!-- Отдельный агент, который только держит Mac в awake.
+         Без аргумента-утилиты caffeinate создаёт ассершены и живёт до убийства процесса.
+         -d дисплей, -i простой системы, -m диск, -s сон системы от сети, -u "пользователь активен". -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-dimsu</string>
+    </array>
+
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+
+    <key>StandardOutPath</key><string>@FV_LOG_DIR@/caffeinate.out.log</string>
+    <key>StandardErrorPath</key><string>@FV_LOG_DIR@/caffeinate.err.log</string>
+</dict>
+</plist>
