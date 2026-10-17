@@ -429,10 +429,8 @@ def main():
             with FrameReader(vfile, meta) as r:
                 ref_frame = r.read_frame_at(0.5)
                 test_times = list(np.arange(1.0, max(1.5, dur - 1.0), 1.5))
-                test_frames = []
-                for tt in test_times:
-                    fr_t = r.read_frame_at(tt)
-                    test_frames.append(fr_t if fr_t is not None else ref_frame)
+                frames_dict = r.read_frames_at(test_times)
+                test_frames = [frames_dict.get(tt) if frames_dict.get(tt) is not None else ref_frame for tt in test_times]
         except Exception:
             continue
 
@@ -446,6 +444,7 @@ def main():
         )
 
         total_clean_frames += len(clean_states)
+        print(f"  [{nv}] {len(clean_states)} clean frames checked.", flush=True)
         pers_run_len = 0
         for cs in clean_states:
             # 1. Screen document FP
@@ -464,8 +463,8 @@ def main():
             if cs.cashier_hand_counting is not None and cs.cashier_hand_counting >= 0.50:
                 fp_hand_count_frames += 1
 
-            # 5. Desk items (cup, clothing, food)
-            has_pers_item = any(it.cls in {"cup", "clothing_or_bag", "food"} for it in cs.desk_items)
+            # 5. Desk items (cup, clothing, food, cash, cash_bag)
+            has_pers_item = any(it.cls in {"cup", "clothing_or_bag", "food", "cash", "cash_bag"} for it in cs.desk_items)
             if has_pers_item:
                 fp_desk_items_frames += 1
                 pers_run_len += 1.5
