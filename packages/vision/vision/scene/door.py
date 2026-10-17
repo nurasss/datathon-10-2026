@@ -62,6 +62,7 @@ class DoorStateDetector:
         frame: np.ndarray,
         door_box: Optional[tuple[float, float, float, float]],
         ref_frame: Optional[np.ndarray] = None,
+        person_boxes: Sequence[tuple[float, float, float, float]] = (),
     ) -> Optional[float]:
         """Calculates door opening probability (0.0 .. 1.0).
 
@@ -93,11 +94,24 @@ class DoorStateDetector:
             ref_crop = ref_frame[y1:y2, x1:x2]
             if ref_crop.shape == crop.shape:
                 diff = cv2.absdiff(ref_crop, crop)
-                diff_val = float(np.mean(diff))
+                gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                # Mask out any persons crossing the doorway
+                mask = np.ones(gray_diff.shape, dtype=bool)
+                for pb in person_boxes:
+                    px1 = max(0, int(round(pb[0] * w)) - x1)
+                    py1 = max(0, int(round(pb[1] * h)) - y1)
+                    px2 = min(x2 - x1, int(round(pb[2] * w)) - x1)
+                    py2 = min(y2 - y1, int(round(pb[3] * h)) - y1)
+                    if px2 > px1 and py2 > py1:
+                        mask[py1:py2, px1:px2] = False
+                diff_val = float(np.mean(gray_diff[mask])) if np.any(mask) else 0.0
 
-        # Door wide open (X-32, X-33) produces large diff_val (> 30) or extreme gap contrast (> 90)
-        if diff_val > 28.0 or gap_contrast > 85.0:
-            score = 0.82 + 0.18 * min(1.0, max(diff_val / 45.0, gap_contrast / 110.0))
+        # Transit check: if someone is actively in the threshold of the door
+        in_doorway = any(pb[0] < 0.16 and pb[1] < 0.60 for pb in person_boxes)
+
+        # Door open (X-32, X-33) produces sustained difference and high gap contrast
+        if (diff_val >= 17.0 and gap_contrast >= 47.0) and not in_doorway:
+            score = 0.85 + 0.15 * min(1.0, (diff_val - 17.0) / 10.0)
         else:
             # Door closed (X-31, X-5, etc.)
             score = max(0.02, min(0.15, diff_val / 150.0))

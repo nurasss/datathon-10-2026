@@ -6,9 +6,10 @@ import json
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -68,12 +69,18 @@ class JobStore:
         self.db_path = str(db_path)
         self._bootstrap()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3.Connection as a context manager only ends the transaction and
+        # never closes; close explicitly or every call leaks a file descriptor.
         conn = sqlite3.connect(self.db_path, timeout=15.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=15000")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=15000")
+            yield conn
+        finally:
+            conn.close()
 
     def _bootstrap(self) -> None:
         with self._connect() as conn:

@@ -71,17 +71,40 @@ class ScreenClassifier:
         if mean_val < self.off_thresh or max_val < 50.0:
             return "off"
 
-        # 2. Check for document (bright desaturated / white pixels typical of Excel/Word/tables)
-        # In HSV: V > 165 and S < 60
+        # 2. Extract multi-channel photometric and chromatic features
+        b = crop[:, :, 0].astype(float)
+        g = crop[:, :, 1].astype(float)
+        r = crop[:, :, 2].astype(float)
+        color_diff = float(np.mean(np.abs(r - g)) + np.mean(np.abs(r - b)) + np.mean(np.abs(g - b)))
+
+        # Vertical illumination uniformity: spreadsheets are uniformly bright from top to bottom
+        sh = crop.shape[0]
+        top_val = float(np.mean(gray[:sh // 2, :]))
+        bot_val = float(np.mean(gray[sh // 2:, :]))
+        val_unif = abs(top_val - bot_val)
+
+        # In HSV: V > 165 and S < 60 (white background pixels)
         v_chan = hsv[:, :, 2]
         s_chan = hsv[:, :, 1]
         white_mask = (v_chan > 165) & (s_chan < 60)
-        white_ratio = float(np.count_nonzero(white_mask)) / float(gray.size)
+        white_ratio = float(np.count_nonzero(white_mask)) / float(max(1, gray.size))
 
-        # High brightness desaturated area indicates document (X-11, X-28)
-        # Lockscreen wallpapers (X-22, X-23, X-29) have colored backgrounds or lower white ratio
-        if (white_ratio >= self.doc_white_thresh and mean_val >= 120.0) or white_ratio >= 0.25:
+        bright_mask = v_chan > 140
+        bright_sat_mean = float(np.mean(s_chan[bright_mask])) if np.any(bright_mask) else 0.0
+
+        # High brightness document discriminator (X-11, X-28):
+        # 1. Active spreadsheets/documents have colorful UI ribbons/headers/icons (color_diff >= 27.0)
+        #    combined with uniform page lighting (val_unif <= 25.0) and sufficient brightness.
+        #    Under dim lighting or person shadow (e.g. cashier passing by), color_diff >= 30 with val_unif <= 25.
+        # 2. Or very high white pixel ratio with spreadsheet accents.
+        is_document = (color_diff >= 30.0 and mean_val >= 75.0 and val_unif <= 25.0) or (
+            color_diff >= 27.0 and mean_val >= 95.0 and val_unif <= 25.0
+        ) or (
+            white_ratio >= 0.22 and mean_val >= 115.0 and bright_sat_mean >= 20.0
+        )
+
+        if is_document:
             return "document"
 
-        # 3. Otherwise, screen is illuminated but has wallpaper / lockscreen pattern
+        # 3. Otherwise, screen is illuminated but has wallpaper / lockscreen pattern (X-22, X-23, X-29, X-25)
         return "lockscreen"
