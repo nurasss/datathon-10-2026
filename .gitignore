@@ -8,6 +8,7 @@ __pycache__/
 .DS_Store
 .env
 .env.*
+**/*.env
 !.env.example
 *.mov
 *.MOV
@@ -18,3 +19,10 @@ data/
 artifacts/
 *.sqlite*
 *.log
+# Existing small baseline weights stay tracked; new model downloads are opt-in.
+packages/vision/models/*.onnx
+packages/vision/models/*.pt
+packages/vision/models/*.pth
+packages/vision/models/*.bin
+packages/vision/models/*.safetensors
+packages/vision/models/*.tflite
