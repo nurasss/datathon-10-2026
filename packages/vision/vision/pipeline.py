@@ -14,6 +14,9 @@ from . import scene_state
 from .config import PipelineConfig
 from .detector import NanoDetConfig, NanoDetPersonDetector, PersonDetector
 from .evidence import encode_frame
+from .deskobjects import DeskWatcher
+from .events import detect_ev01
+from .hybrid import baseline_states, combine_layers, desk_candidates, infer_baseline_zones
 from .rule_engine import evaluate_rules
 from .tracking import track_people
 from .triggers import at_workplace, build_triggers, workplace_model
@@ -38,7 +41,7 @@ class AnalysisOptions:
 
 
 def choose_analysis_fps(cfg: PipelineConfig, meta: VideoMeta) -> float:
-    return min(meta.fps, max(1.5, min(2.0, cfg.sampling.coarse_fps)))
+    return min(meta.fps, max(0.1, cfg.sampling.coarse_fps))
 
 
 def candidate_windows(observations, post, duration, cfg, frame_height=None):
@@ -114,6 +117,8 @@ class VideoAnalyzer:
         timings["probe"] = time.perf_counter()-started
         fps = choose_analysis_fps(self.cfg, meta)
         coarse, all_detections = {}, {}
+        hybrid_gray = {}
+        desk_watcher = DeskWatcher(self.cfg.desk)
         inference_sec = 0.0
         calls = 0
         frame_size = None
@@ -131,6 +136,8 @@ class VideoAnalyzer:
             inference_sec += time.perf_counter()-t0
             calls += 1
             key = round(t, 4)
+            if self.cfg.hybrid.enabled and (phase == 'coarse' or self.cfg.hybrid.input_grid == 'observed'):
+                hybrid_gray[key] = desk_watcher.downscale(frame)
             all_detections[key] = (dets, phase)
             people = [d for d in dets if d.label == "person"]
             return FrameObservation(key, 0, people)
@@ -181,6 +188,15 @@ class VideoAnalyzer:
         door = ZoneSpec("door", w*dx1, h*dy1, w*dx2, h*dy2, 0.3, "geometry_prior")
         zones.append(door)
         coarse_tracks, coarse_assignments = track_people(list(coarse.values()), post, door, w, h, self.cfg.triggers)
+        hybrid_observations, hybrid_states = [], []
+        b_zones = zones[:2]
+        if self.cfg.hybrid.enabled and self.cfg.hybrid.input_grid == 'coarse':
+            hybrid_observations = [FrameObservation(o.t, o.frame_index,
+                [d for d in o.detections if d.score >= self.cfg.detector.min_score], motion=o.motion) for o in coarse.values()]
+            hybrid_assignments = {i: [(tr,d) for tr,d in people if d.score >= self.cfg.detector.min_score]
+                                  for i,people in coarse_assignments.items()}
+            b_zones = infer_baseline_zones(hybrid_observations,w,h,self.cfg)
+            hybrid_states = baseline_states(hybrid_observations, hybrid_assignments, b_zones[0], b_zones[1], 1/fps)
         window_observations = [FrameObservation(o.t, o.frame_index,
             [d for _, d in coarse_assignments.get(o.frame_index, [])], motion=o.motion) for o in coarse.values()]
         windows = candidate_windows(window_observations, post, meta.duration_sec, self.cfg.sampling, h)
@@ -204,7 +220,7 @@ class VideoAnalyzer:
         scene_states = []
         dense_keys = set()
         batch_frames, batch_times, batch_detections = [], [], []
-        context = {"zones": [z.as_dict() for z in zones], "bbox_format": "normalized_xyxy"}
+        context = {"zones": [z.as_dict() for z in zones], "bbox_format": "normalized_xyxy", "enable_colab_yolox": False}
 
         def scene_batch():
             if not batch_frames:
@@ -315,6 +331,28 @@ class VideoAnalyzer:
                                 decisions=decisions, track_roles={tr.track_id: tr.role for tr in tracks})[:self.cfg.max_events]
         timings["tracking_rules"] = time.perf_counter()-t0
         t0 = time.perf_counter()
+        hybrid_decisions = []
+        raw_b1, raw_b2, hybrid_blobs = [], [], {}
+        b_dt = 1/fps
+        if self.cfg.hybrid.enabled:
+            if self.cfg.hybrid.input_grid == 'observed':
+                b_dt = 1/self.cfg.sampling.dense_fps
+                hybrid_observations = [FrameObservation(o.t,o.frame_index,
+                    [d for d in o.detections if d.score>=self.cfg.detector.min_score],motion=o.motion) for o in observations]
+                b_zones = infer_baseline_zones(hybrid_observations,w,h,self.cfg)
+                high_assignments = {i:[(tr,d) for tr,d in ps if d.score>=self.cfg.detector.min_score]
+                                    for i,ps in assignments.items()}
+                hybrid_states = baseline_states(hybrid_observations,high_assignments,b_zones[0],b_zones[1],b_dt)
+            raw_b1 = detect_ev01(hybrid_states, self.cfg.ev01, b_dt, {"zone_confidence":b_zones[0].confidence})
+            raw_b2, hybrid_blobs = desk_candidates(hybrid_observations,
+                [hybrid_gray[o.t] for o in hybrid_observations], b_zones[0], w, self.cfg, hybrid_states, b_dt)
+            for event in events:
+                event.meta.setdefault("layer", "A")
+            events = combine_layers(events, raw_b1, raw_b2, scene_states, meta.duration_sec,
+                                    self.registry, self.cfg, decisions=hybrid_decisions)
+        timings["hybrid"] = time.perf_counter()-t0
+        hybrid_gray.clear()
+        t0 = time.perf_counter()
         if events:
             with FrameReader(path, meta) as reader:
                 self._attach_evidence(events, reader)
@@ -340,6 +378,14 @@ class VideoAnalyzer:
         quality["cashier_track_aliases"] = {str(tr.track_id): tr.source_track_ids for tr in tracks if tr.role == "cashier"}
         quality["scene_context"] = {k: v for k, v in context.items() if k != "ref_frame"}
         quality["scene_reference"] = "first_dense_frame_of_clip_not_batch"
+        quality["hybrid"] = {"enabled": self.cfg.hybrid.enabled, "nominal_sampling_fps": 1/b_dt,
+            "input_grid": self.cfg.hybrid.input_grid,
+            "zones": [z.as_dict() for z in b_zones],
+            "detector_calls_added": 0, "ev01_candidates": raw_b1, "ev02_candidates": raw_b2,
+            "decisions": hybrid_decisions}
+        if options.keep_trace and self.cfg.hybrid.enabled:
+            quality["hybrid"]["states"] = [asdict(s) for s in hybrid_states]
+            quality["hybrid"]["per_frame_blobs"] = hybrid_blobs
         if options.keep_trace:
             quality["trace"] = trace
             quality["rule_decisions"] = decisions

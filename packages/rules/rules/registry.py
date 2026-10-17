@@ -10,6 +10,7 @@ from typing import Any
 DEFAULT_PATH = Path(__file__).resolve().parent / "registry.json"
 
 TAXONOMY = {
+    "LEAVE_DURING_SERVICE": ("Уход с рабочего места во время обслуживания клиента", "KZ-NB231-P22"),
     "LEAVE_VALUABLES": ("Уход с рабочего места с оставлением ценностей на столе", "KZ-NB231-P20-2"),
     "LEAVE_SCREEN_UNLOCKED": ("Уход с рабочего места без блокировки компьютера", "KZ-ARDFM53-P71-9"),
     "SAFE_OPEN": ("Сейф оставлен открытым без присмотра", "KZ-NB231-P20-2"),

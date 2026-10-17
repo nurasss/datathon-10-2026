@@ -20,6 +20,7 @@ import argparse
 import csv
 import datetime
 import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
@@ -592,6 +593,11 @@ def main() -> int:
     cfg = PipelineConfig.load(args.config)
     manifest = json.loads((out_dir / "run.json").read_text())
     manifest.update({"effective_config": cfg.to_dict(),
+        "runtime": {"python": sys.executable, "python_version": sys.version,
+                    "numpy": np.__version__, "opencv": cv2.__version__,
+                    "onnxruntime": importlib.metadata.version("onnxruntime"),
+                    "evaluation_processes": 1,
+                    "thread_env": {k: os.environ.get(k) for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")}},
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True),
         "dataset": [{"video": e.primary_name, "aliases": e.aliases, "sha256": e.sha256,

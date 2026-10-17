@@ -68,6 +68,7 @@ def _rule_policies() -> dict[str, RulePolicy]:
     policies["SAFE_OPEN"] = RulePolicy(threshold=0.95, min_frames=8, min_sec=1.4)
     policies["DOOR_OPEN"] = RulePolicy(threshold=0.8, min_frames=12, min_sec=3.0)
     policies["OUTSIDER"].threshold = 0.45
+    policies["LEAVE_DURING_SERVICE"] = RulePolicy()
     return policies
 
 
@@ -163,6 +164,14 @@ class EvidenceConfig:
 
 
 @dataclass
+class HybridConfig:
+    enabled: bool = False
+    input_grid: str = "observed"
+    locked_hold_sec: float = 2.0
+    locked_max_gap_sec: float = 0.45
+
+
+@dataclass
 class PipelineConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
@@ -173,6 +182,7 @@ class PipelineConfig:
     evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     rules: RuleEngineConfig = field(default_factory=RuleEngineConfig)
     triggers: TriggerConfig = field(default_factory=TriggerConfig)
+    hybrid: HybridConfig = field(default_factory=HybridConfig)
     #: fixed workplace rectangle as frame fractions, disables automatic zone inference
     post_zone_override: tuple[float, float, float, float] | None = None
     max_events: int = 6
@@ -195,6 +205,7 @@ class PipelineConfig:
             "evidence": EvidenceConfig,
             "rules": RuleEngineConfig,
             "triggers": TriggerConfig,
+            "hybrid": HybridConfig,
         }
         for key, klass in nested.items():
             if key in data and isinstance(data[key], dict):
@@ -217,6 +228,12 @@ class PipelineConfig:
                 kwargs[key] = data[key]
         if kwargs.get("post_zone_override") is not None:
             kwargs["post_zone_override"] = tuple(kwargs["post_zone_override"])
+        if "hybrid" in kwargs:
+            hybrid = kwargs["hybrid"]
+            if hybrid.input_grid not in {"coarse", "observed"}:
+                raise ValueError("hybrid.input_grid must be coarse or observed")
+            if hybrid.locked_hold_sec < 2 or hybrid.locked_max_gap_sec <= 0:
+                raise ValueError("hybrid lockscreen hold must be >=2 seconds with a positive sample-gap limit")
         return cls(**kwargs)
 
     @classmethod

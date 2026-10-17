@@ -1,6 +1,6 @@
 {
   "sampling": {
-    "coarse_fps": 1.5,
+    "coarse_fps": 1.0,
     "dense_fps": 5.0,
     "window_padding_sec": 4.0,
     "motion_threshold": 12.0,
@@ -44,7 +44,7 @@
     "blur_ksize": 3
   },
   "ev01": {
-    "enabled": false,
+    "enabled": true,
     "min_absence_sec": 2.0,
     "absence_gap_tolerance_sec": 0.8,
     "pre_window_sec": 4.0,
@@ -54,7 +54,7 @@
     "min_confidence": 0.35
   },
   "ev02": {
-    "enabled": false,
+    "enabled": true,
     "min_persist_sec": 2.0,
     "min_unattended_sec": 1.5,
     "min_confidence": 0.40
@@ -65,6 +65,8 @@
     "jpeg_quality": 85
   },
   "post_zone_override": null,
+  "hybrid": {"enabled": true, "input_grid": "observed",
+             "locked_hold_sec": 2.0, "locked_max_gap_sec": 0.45},
   "triggers": {
     "min_person_score": 0.30, "max_person_center_y": 0.72, "min_person_height_frac": 0.12,
     "fragment_gap_sec": 3.5, "noncashier_fragment_gap_sec": 0.8, "fragment_iou": 0.20, "fragment_distance_ratio": 0.55,
@@ -83,6 +85,7 @@
   "rules": {
     "leave_observation_sec": 3.0, "entry_observation_sec": 8.0, "merge_gap_sec": 3.0,
     "types": {
+      "LEAVE_DURING_SERVICE": {"enabled": true},
       "LEAVE_VALUABLES": {"enabled": true, "threshold": 0.75, "min_frames": 3, "min_sec": 0.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
       "LEAVE_SCREEN_UNLOCKED": {"enabled": true, "threshold": 0.75, "min_frames": 3, "min_sec": 0.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},
       "SAFE_OPEN": {"enabled": true, "threshold": 0.95, "min_frames": 8, "min_sec": 1.4, "max_gap_sec": 0.45, "lookback_sec": 2.0},

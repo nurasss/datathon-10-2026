@@ -28,9 +28,24 @@ def analyzer(project_root: Path, monkeypatch) -> VideoAnalyzer:
 
 
 def test_departure_without_scene_evidence_is_not_a_violation(analyzer: VideoAnalyzer, violation_clip: Path) -> None:
+    # Layer A remains fail-closed. The curator-authorized B layer is tested
+    # separately: departure plus a client no longer requires a scene verdict.
+    analyzer.cfg.hybrid.enabled = False
     result = analyzer.analyze(violation_clip, options=AnalysisOptions(job_id="test"))
     assert result.verdict == "no_violation"
     assert result.events == []
+
+
+def test_hybrid_does_not_add_detector_calls(analyzer: VideoAnalyzer, violation_clip: Path):
+    import json
+    analyzer.cfg.hybrid.enabled = False
+    a = analyzer.analyze(violation_clip, AnalysisOptions(keep_trace=True))
+    analyzer.cfg.hybrid.enabled = True
+    b = analyzer.analyze(violation_clip, AnalysisOptions(keep_trace=True))
+    assert a.quality['inference_calls'] == b.quality['inference_calls']
+    assert b.quality['hybrid']['detector_calls_added'] == 0
+    assert any(e.meta.get('layer') == 'B' for e in b.events)
+    assert json.dumps(b.quality)
 
 
 def test_positive_scene_produces_three_real_evidence_frames(analyzer, compliant_clip, monkeypatch):
