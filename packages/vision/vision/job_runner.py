@@ -80,10 +80,13 @@ def run_analysis_job(
         analyzer = VideoAnalyzer(cfg=cfg, project_root=project_root)
         result = analyzer.analyze(
             video_path,
-            options=AnalysisOptions(job_id=job_id, keep_trace=False),
+            options=AnalysisOptions(job_id=job_id, keep_trace=True),
             progress=progress,
         )
         events = []
+        report_path.with_suffix(".trace.json").write_text(json.dumps({
+            "job_id": job_id, "bbox_format": "normalized_xyxy", "quality": result.quality,
+        }, ensure_ascii=False), encoding="utf-8")
         for index, event in enumerate(result.events):
             events.append(_serialise_event(job_id, index, event, evidence_path))
         payload.update(

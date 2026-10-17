@@ -24,21 +24,24 @@ def analyzer(project_root: Path) -> VideoAnalyzer:
     )
 
 
-def test_cashier_leaves_while_client_waits(analyzer: VideoAnalyzer, violation_clip: Path) -> None:
+def test_departure_without_scene_evidence_is_not_a_violation(analyzer: VideoAnalyzer, violation_clip: Path) -> None:
     result = analyzer.analyze(violation_clip, options=AnalysisOptions(job_id="test"))
-    assert result.verdict == "violation"
-    assert result.events, "ляпис: событие не найдено"
+    assert result.verdict == "no_violation"
+    assert result.events == []
+
+
+def test_positive_scene_produces_three_real_evidence_frames(analyzer, compliant_clip, monkeypatch):
+    from vision.scene_state import DeskItem, SceneState
+    monkeypatch.setattr("vision.scene_state.analyze_scene", lambda frames, timestamps, detections, context=None: [
+        SceneState(t, None, [DeskItem("cup", (0.3, 0.3, 0.4, 0.4), 1.0)], None, None, None) for t in timestamps])
+    result = analyzer.analyze(compliant_clip, AnalysisOptions(keep_trace=True))
+    assert result.events[0].event_code == "PERSONAL_ITEMS"
     event = result.events[0]
-    assert event.event_code == "EV01"
-    # the cashier disappears at 6 s and returns at 10.5 s
-    assert 4.5 <= event.peak_sec <= 8.5, f"таймкод {event.peak_sec} вне ожидаемого окна"
-    frames = event.meta.get("evidence") or []
-    assert 1 <= len(frames) <= 3
-    for frame in frames:
-        assert is_valid_jpeg(frame.jpeg_bytes)
-        assert 0 <= frame.timestamp_sec <= result.meta.duration_sec + 0.1
-    assert "231" in event.hypothesis
-    assert "п. 22" in event.hypothesis or "пункт 22" in event.hypothesis
+    frames = event.meta["evidence"]
+    assert len(frames) == 3
+    assert all(is_valid_jpeg(f.jpeg_bytes) for f in frames)
+    assert event.peak_sec == event.start_sec
+    assert "пункт 12, часть первая" in event.hypothesis
 
 
 def test_no_false_positive_when_cashier_stays(analyzer: VideoAnalyzer, compliant_clip: Path) -> None:
@@ -58,4 +61,4 @@ def test_events_never_use_unapproved_rules(analyzer: VideoAnalyzer, violation_cl
     for event in result.events:
         rule = registry.get(event.rule_id)
         assert rule is not None and rule.approved, f"{event.rule_id} не утверждён"
-        assert event.event_label == rule.event_label
+        assert event.event_label == registry.for_event(event.event_code).event_label

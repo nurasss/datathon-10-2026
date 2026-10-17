@@ -1,4 +1,4 @@
-"""Queue manager: runs one analysis at a time in an isolated child process."""
+"""Queue manager: configurable isolated jobs (two by default)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ log = logging.getLogger("fortevision.worker")
 
 
 class JobManager:
-    """Single-slot worker with a hard per-job deadline.
+    """Bounded worker pool with a hard per-job deadline.
 
     The public contract promises an answer within five minutes; a job that
     exceeds its budget is terminated and reported as ``failed`` — never as a
@@ -51,7 +51,7 @@ class JobManager:
         self.store.expire(self.settings.job_timeout_sec)
         self._watchdog = threading.Thread(target=self._watch_deadlines, name="fv-watchdog", daemon=True)
         self._watchdog.start()
-        concurrency = getattr(self.settings, "worker_concurrency", 1)
+        concurrency = getattr(self.settings, "worker_concurrency", 2)
         self._threads = []
         for i in range(concurrency):
             t = threading.Thread(target=self._loop, name=f"fv-worker-{i}", daemon=True)
@@ -240,6 +240,7 @@ class JobManager:
             for path in (
                 self.settings.uploads_dir / f"{job_id}.mov",
                 self.settings.reports_dir / f"{job_id}.json",
+                self.settings.reports_dir / f"{job_id}.trace.json",
                 self.settings.reports_dir / f"{job_id}.log",
             ):
                 try:

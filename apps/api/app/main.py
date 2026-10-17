@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import logging.config
+import os
 import time
 import uuid
 from pathlib import Path
@@ -41,6 +42,11 @@ from .worker import JobManager
 from .middleware import UploadGuard
 
 VERSION = "1.0.0"
+
+
+def _docs_enabled() -> bool:
+    return os.environ.get("FV_ENABLE_DOCS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -69,8 +75,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ForteVision — признаки нарушений кассовой дисциплины",
     version=VERSION,
-    docs_url="/api/docs",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if _docs_enabled() else None,
+    redoc_url="/api/redoc" if _docs_enabled() else None,
+    openapi_url="/api/openapi.json" if _docs_enabled() else None,
     lifespan=lifespan,
 )
 app.add_middleware(UploadGuard, settings=settings)

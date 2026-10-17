@@ -14,6 +14,14 @@ License sources, verified 2026-10-17:
 - <https://github.com/opencv/opencv_zoo/blob/main/models/object_detection_nanodet/LICENSE>
 - <https://github.com/opencv/opencv_zoo/blob/main/models/person_detection_mediapipe/LICENSE>
 
+Task 3 exports (same checkpoint, no training): `nanodet_320.onnx` and
+`nanodet_416.onnx`. `scripts/prepare_nanodet.py` removes initializer graph inputs
+so ORT can constant-fold/fuse; the 320 export also changes spatial shape
+initializers. Learned tensors are unchanged. Keep the original `nanodet.onnx`
+for the paired OpenCV baseline audit. Production selects 416 for both passes;
+320 remains available for the speed/count comparison. Runtime is ONNX Runtime CPU (MIT), weights remain
+Apache-2.0. Export requires the development-only `onnx` package.
+
 These are person/object detectors, not face recognition models. The installed OpenCV
 wheel may contain unused cascade XML files; the application does not load them.
 Local copy of the model license: `LICENSE-APACHE-2.0.txt`.

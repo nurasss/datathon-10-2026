@@ -33,6 +33,7 @@ def validate_input(video: str) -> None:
     if shutil.which("ffmpeg"):
         result = subprocess.run([
             "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
+            "-threads", "1", "-filter_threads", "1",
             "-i", video, "-map", "0:v:0", "-an", "-sn", "-dn", "-f", "null", "-",
         ], capture_output=True, check=False)
         if result.returncode:

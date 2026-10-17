@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 DEFAULT_PATH = Path(__file__).resolve().parent / "registry.json"
+
+TAXONOMY = {
+    "LEAVE_VALUABLES": ("Уход с рабочего места с оставлением ценностей на столе", "KZ-NB231-P20-2"),
+    "LEAVE_SCREEN_UNLOCKED": ("Уход с рабочего места без блокировки компьютера", "KZ-ARDFM53-P71-9"),
+    "SAFE_OPEN": ("Сейф оставлен открытым без присмотра", "KZ-NB231-P20-2"),
+    "PERSONAL_ITEMS": ("Личные вещи, еда или напитки на рабочем месте кассира", "KZ-NB231-P12-1"),
+    "PHONE_USE": ("Использование мобильного телефона на рабочем месте", "KZ-NB231-P12-2"),
+    "OUTSIDER": ("Посторонний в кассовом помещении", "KZ-NB14-P16-1"),
+    "DOOR_OPEN": ("Дверь кассы оставлена открытой", "KZ-NB14-P16-1"),
+    "MANUAL_COUNT": ("Пересчёт наличных вручную без счётчика банкнот", "KZ-NB231-P41"),
+}
 
 
 @dataclass
@@ -35,10 +46,10 @@ class RuleReference:
     def short_citation(self) -> str:
         """Human readable citation used in the JSON ``description`` field."""
 
-        return f"{self.act_number}; п. {self.paragraph}"
+        return f"{self.act_number}; {self.paragraph}"
 
     def full_citation(self) -> str:
-        return f"{self.act_number}, пункт {self.paragraph}: «{self.quoted_text}»"
+        return f"{self.act_number}, {self.paragraph}: «{self.quoted_text}» ({self.source_url})"
 
 
 class RuleRegistry:
@@ -56,6 +67,13 @@ class RuleRegistry:
         data = json.loads(Path(path or DEFAULT_PATH).read_text(encoding="utf-8"))
         rules = []
         for raw in data.get("rules", []):
+            if "acts" in data:
+                act = data["acts"][raw["act"]]
+                raw = dict(raw, **act, event_type="", event_label=raw["applies_to"][0],
+                           quoted_text=raw["quote"], observable_predicate=raw["observable"],
+                           required_context="Видимые факты; требуется проверка человеком",
+                           cannot_infer=[raw["cannot_infer"]], status=data.get("status", "draft"),
+                           reviewer=data.get("provenance", ""))
             known = {f.name for f in RuleReference.__dataclass_fields__.values()}  # type: ignore[attr-defined]
             rules.append(RuleReference(**{k: v for k, v in raw.items() if k in known}))
         return cls(rules, data.get("registry_version", ""), data.get("verified_on", ""))
@@ -64,6 +82,10 @@ class RuleRegistry:
         return self._by_id.get(rule_id)
 
     def for_event(self, event_type: str) -> RuleReference | None:
+        if event_type in TAXONOMY:
+            label, rule_id = TAXONOMY[event_type]
+            rule = self.get(rule_id)
+            return replace(rule, event_type=event_type, event_label=label) if rule and rule.approved else None
         rule = self._by_event.get(event_type)
         return rule if rule and rule.approved else None
 
@@ -77,6 +99,7 @@ class RuleRegistry:
             {
                 "rule_id": r.rule_id,
                 "event_type": r.event_type,
+                "event_codes": [code for code, (_, rule_id) in TAXONOMY.items() if rule_id == r.rule_id],
                 "event_label": r.event_label,
                 "act_number": r.act_number,
                 "act_name": r.act_name,

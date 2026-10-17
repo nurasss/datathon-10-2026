@@ -171,7 +171,10 @@ def test_chunked_upload_limit_without_content_length(api, monkeypatch):
 
 
 @pytest.fixture
-def evidence_job(api, violation_clip, project_root):
+def evidence_job(api, violation_clip, project_root, monkeypatch):
+    from vision.scene_state import DeskItem, SceneState
+    monkeypatch.setattr("vision.scene_state.analyze_scene", lambda frames, timestamps, detections, context=None: [
+        SceneState(t, None, [DeskItem("cup", (0.3, 0.3, 0.4, 0.4), 1.0)], None, None, None) for t in timestamps])
     result = VideoAnalyzer(cfg=PipelineConfig.load(project_root / "configs/inference.default.json"),
                            detector=ColorPersonDetector(), project_root=project_root).analyze(violation_clip)
     assert result.events

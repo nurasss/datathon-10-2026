@@ -98,7 +98,7 @@ def test_details_done_with_violations(api):
             "event_code": "EV01",
             "timecode_sec": 5.2,
             "description": "Рабочее место не занято",
-            "rule_id": "KZ-CASH-231-P22",
+            "rule_id": "KZ-NB231-P22",
             "evidence": [{"timestamp_sec": 5.0, "path": str(ev_path)}],
         }
     ]
@@ -138,7 +138,7 @@ def test_details_done_with_violations(api):
 
     rule = viol["rule"]
     assert rule["act_number"].startswith("Постановление Правления")
-    assert rule["paragraph"] == "22"
+    assert rule["paragraph"] == "пункт 22"
     assert "Кассовому работнику не допускается покидать рабочее место" in rule["quote"]
     assert "adilet.zan.kz" in rule["source_url"]
     assert len(rule["act_name"]) > 10

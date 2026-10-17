@@ -54,6 +54,8 @@ class ZoneConfig:
 
     #: fallback workplace rectangle as fractions of the frame (x1, y1, x2, y2)
     fallback_post_rect: tuple[float, float, float, float] = (0.30, 0.30, 0.72, 0.92)
+    #: uncalibrated doorway prior; override for a different camera, not a door detector
+    door_rect: tuple[float, float, float, float] = (0.0, 0.05, 0.35, 0.42)
     #: weight threshold relative to the peak cell when growing the post zone
     cluster_rel_threshold: float = 0.35
     #: the workplace rectangle is clamped to this factor of a typical person box

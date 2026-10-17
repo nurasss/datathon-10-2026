@@ -1,4 +1,5 @@
 .venv/
+.runtime/
 venv/
 __pycache__/
 *.py[cod]
@@ -21,6 +22,8 @@ artifacts/
 *.log
 # Existing small baseline weights stay tracked; new model downloads are opt-in.
 packages/vision/models/*.onnx
+!packages/vision/models/nanodet_320.onnx
+!packages/vision/models/nanodet_416.onnx
 packages/vision/models/*.pt
 packages/vision/models/*.pth
 packages/vision/models/*.bin

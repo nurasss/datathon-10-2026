@@ -33,7 +33,7 @@ class VideoMeta:
 
 @dataclass
 class Detection:
-    """A single person-like detection in one sampled frame (pixel coordinates)."""
+    """One COCO detection in pixels (trace exports normalized coordinates)."""
 
     x1: float
     y1: float
@@ -118,7 +118,7 @@ class EventCandidate:
     events without an approved rule are never emitted by the pipeline.
     """
 
-    event_code: str          # EV01, EV02 ...
+    event_code: str          # semantic code from rules.registry.TAXONOMY
     event_label: str         # human readable type shown in the JSON ``type`` field
     start_sec: float
     peak_sec: float

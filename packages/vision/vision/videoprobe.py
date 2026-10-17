@@ -140,7 +140,7 @@ class FrameReader:
     def __init__(self, path: str | Path, meta: VideoMeta, decode_max_width: int | None = None):
         self.path = str(path)
         self.meta = meta
-        self._cap = cv2.VideoCapture(self.path)
+        self._cap = cv2.VideoCapture(self.path, cv2.CAP_FFMPEG, [cv2.CAP_PROP_N_THREADS, 1])
         if not self._cap.isOpened():
             raise VideoProbeError(f"cannot open video for decoding: {self.path}")
         self._decoded = 0
@@ -182,6 +182,19 @@ class FrameReader:
                 break
             yield min(target, duration), frame
             target += step
+
+    def iter_window(self, start: float, end: float, fps: float) -> Iterator[tuple[float, np.ndarray]]:
+        """Seek once per candidate window, then decode sequentially (one thread)."""
+        start_idx = int(round(start * self.fps))
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
+        self._decoded = start_idx
+        target = start
+        while target <= min(end, self.meta.duration_sec - 1/self.fps) + 1e-6:
+            frame = self._read_at(target, self.fps)
+            if frame is None:
+                break
+            yield target, frame
+            target += 1 / fps
 
     def _read_at(self, t_sec: float, fps: float) -> Optional[np.ndarray]:
         """Read the frame whose presentation time is the closest available >= t_sec."""

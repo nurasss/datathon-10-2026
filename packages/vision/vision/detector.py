@@ -1,9 +1,6 @@
-"""Local person detectors (CPU only, no network access at inference time).
+"""NanoDet on ONNX Runtime CPU (MIT); checkpoint: OpenCV Zoo, Apache-2.0.
 
-Primary backend: NanoDet-Plus-m-1.5x (OpenCV Zoo, Apache-2.0), decoded with
-``cv2.dnn``.  Secondary backend: a motion-blob proxy used only as a safety net
-when the neural detector returns nothing on a frame that clearly contains
-foreground activity.  A deterministic ``StubDetector`` supports tests.
+All COCO classes are decoded in one inference. No faces or cloud services.
 """
 
 from __future__ import annotations
@@ -19,6 +16,18 @@ import numpy as np
 from .types import Detection
 
 PERSON_CLASS_ID = 0  # COCO class 0 == person
+COCO_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
+    "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+)
 
 
 class DetectorError(RuntimeError):
@@ -53,10 +62,11 @@ class NanoDetConfig:
     strides: tuple[int, ...] = (8, 16, 32)
     pad_value: int = 114
     keep_ratio: bool = True
+    intra_op_num_threads: int = 1
 
 
 class NanoDetPersonDetector:
-    """NanoDet-Plus detector restricted to the ``person`` class."""
+    """Single-threaded per job by default: two jobs share two CPU cores."""
 
     name = "nanodet_plus_m_1.5x_416"
 
@@ -65,63 +75,62 @@ class NanoDetPersonDetector:
         if not Path(self.model_path).is_file():
             raise DetectorError(f"detector weights not found: {self.model_path}")
         self.cfg = config or NanoDetConfig()
-        self.net = cv2.dnn.readNet(self.model_path)
-        try:
-            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-            self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        except cv2.error:  # pragma: no cover - depends on the OpenCV build
-            pass
-        self._out_names = self.net.getUnconnectedOutLayersNames()
+        import onnxruntime as ort
+
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = max(1, self.cfg.intra_op_num_threads)
+        opts.inter_op_num_threads = 1
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        self.net = ort.InferenceSession(self.model_path, opts, providers=["CPUExecutionProvider"])
+        self._input_name = self.net.get_inputs()[0].name
+        expected = self.net.get_inputs()[0].shape[-2:]
+        if expected != [self.cfg.input_size, self.cfg.input_size]:
+            raise DetectorError(f"input size {expected} != configured {self.cfg.input_size}")
+        self.name = f"nanodet_ort_cpu_{self.cfg.input_size}"
         self._project = np.arange(self.cfg.reg_max + 1, dtype=np.float32)
         self.sha256 = _sha256_file(self.model_path)
 
     # -- public API ---------------------------------------------------------------
 
     def detect(self, frame: np.ndarray, min_score: float | None = None) -> list[Detection]:
+        return [d for d in self.detect_all(frame, min_score) if d.label == "person"]
+
+    def detect_all(self, frame: np.ndarray, min_score: float | None = None) -> list[Detection]:
         threshold = self.cfg.prob_threshold if min_score is None else min_score
         blob, scale, pad = self._preprocess(frame)
-        self.net.setInput(blob)
-        outs = self.net.forward(self._out_names)
+        outs = self.net.run(None, {self._input_name: blob})
         raw = [np.asarray(o) for o in outs]
         boxes, scores = self._decode(raw, frame.shape[1], frame.shape[0], scale, pad)
-        keep = scores >= threshold
-        boxes, scores = boxes[keep], scores[keep]
-        if boxes.size == 0:
-            return []
-        idxs = cv2.dnn.NMSBoxes(
-            [tuple(map(float, b)) for b in boxes.tolist()],
-            [float(s) for s in scores.tolist()],
-            threshold,
-            self.cfg.nms_threshold,
-        )
         result: list[Detection] = []
         frame_area = float(max(1, frame.shape[0] * frame.shape[1]))
-        for i in np.asarray(idxs).reshape(-1):
-            x1, y1, x2, y2 = boxes[int(i)].tolist()
-            x1 = max(0.0, x1)
-            y1 = max(0.0, y1)
-            x2 = min(float(frame.shape[1]), x2)
-            y2 = min(float(frame.shape[0]), y2)
-            area_ratio = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1)) / frame_area
-            if area_ratio < self.cfg.min_box_area_ratio or area_ratio > self.cfg.max_box_area_ratio:
+        for cls_id, name in enumerate(COCO_NAMES):
+            indices = np.flatnonzero(scores[:, cls_id] >= threshold)
+            if not len(indices):
                 continue
-            result.append(
-                Detection(
-                    x1=x1,
-                    y1=y1,
-                    x2=x2,
-                    y2=y2,
-                    score=float(scores[int(i)]),
-                    label="person",
-                    source="onnx",
-                )
+            b = boxes[indices].copy()
+            b[:, (0, 2)] = b[:, (0, 2)].clip(0, frame.shape[1])
+            b[:, (1, 3)] = b[:, (1, 3)].clip(0, frame.shape[0])
+            xywh = b.copy()
+            xywh[:, 2:] -= xywh[:, :2]
+            kept = cv2.dnn.NMSBoxes(
+                xywh.tolist(), scores[indices, cls_id].tolist(), threshold, self.cfg.nms_threshold
             )
+            for k in np.asarray(kept).reshape(-1):
+                x1, y1, x2, y2 = map(float, b[k])
+                area = (x2 - x1) * (y2 - y1) / frame_area
+                # Tiny objects must not be filtered by person-size thresholds.
+                if area <= 0 or (cls_id == 0 and not self.cfg.min_box_area_ratio <= area <= self.cfg.max_box_area_ratio):
+                    continue
+                result.append(Detection(x1, y1, x2, y2, float(scores[indices[k], cls_id]), name))
         return result
 
     # -- internals ----------------------------------------------------------------
 
     def _preprocess(self, frame: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
-        """Letterbox to the model input size and normalise (RGB, mean/std, NCHW)."""
+        """Letterbox and normalize BGR/mean/std/NCHW, matching the Zoo export."""
 
         size = self.cfg.input_size
         h, w = frame.shape[:2]
@@ -156,7 +165,7 @@ class NanoDetPersonDetector:
         """Decode NanoDet head outputs of shape (1, N, 80) and (1, N, 4*(reg_max+1))."""
 
         pairs: list[tuple[np.ndarray, np.ndarray, int]] = []
-        n_cls = [o for o in outputs if o.ndim == 3 and o.shape[-1] > 4]
+        n_cls = [o for o in outputs if o.ndim == 3 and o.shape[-1] == 80]
         n_reg = [o for o in outputs if o.ndim == 3 and o.shape[-1] == 4 * (self.cfg.reg_max + 1)]
         # match by grid size
         for cls in n_cls:
@@ -177,7 +186,7 @@ class NanoDetPersonDetector:
             # Anchor centres follow the OpenCV Zoo reference implementation.
             centers_x = xs.reshape(-1) * stride + 0.5 * (stride - 1)
             centers_y = ys.reshape(-1) * stride + 0.5 * (stride - 1)
-            prob = np.clip(cls_s[:, PERSON_CLASS_ID].astype(np.float32), 0.0, 1.0)
+            prob = np.clip(cls_s.astype(np.float32), 0.0, 1.0)
             d = reg_d.reshape(n_loc, 4, self.cfg.reg_max + 1).astype(np.float32)
             d = _softmax(d, axis=-1)
             dist = (d * self._project.reshape(1, 1, -1)).sum(axis=-1) * stride
@@ -196,8 +205,7 @@ class NanoDetPersonDetector:
             raise DetectorError("unexpected detector output layout")
         all_boxes = np.clip(np.concatenate(boxes, axis=0), 0, None)
         all_scores = np.concatenate(scores, axis=0)
-        order = np.argsort(-all_scores)[:3000]
-        return all_boxes[order], all_scores[order]
+        return all_boxes, all_scores
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:

@@ -100,7 +100,7 @@ def _head(title: str) -> str:
 def _header(authenticated: bool) -> str:
     nav = (
         "<a href='/'>Загрузка</a><a href='/ui/rules'>Нормативная база</a>"
-        "<a href='/ui/health'>Статус</a><a href='/api/docs'>API</a>"
+        "<a href='/ui/health'>Статус</a>"
     )
     if authenticated:
         nav += "<a href='/ui/logout'>Выйти</a>"
@@ -402,7 +402,7 @@ def page_health(
         + "</div></div><div class=card><h3>Проверки</h3><ul class=limits>"
         + "<li>JSON-схема ответа: <code>apps/api/app/schemas.py</code>, тесты <code>tests/test_contract.py</code></li>"
         + "<li>Изоляция декодера: ffprobe выполняется отдельным процессом с таймаутом</li>"
-        + "<li>Локальный OpenCV DNN, без облачных AI API, распознавания лиц и звука</li>"
+        + "<li>Локальный ONNX Runtime CPU, без облачных AI API, распознавания лиц и звука</li>"
         + "</ul></div></div>"
         + _footer()
         + "</body></html>"

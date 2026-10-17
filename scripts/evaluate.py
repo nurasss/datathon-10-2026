@@ -23,9 +23,10 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,10 +37,13 @@ ROOT = Path(__file__).resolve().parents[1]
 for extra in ("vision", "rules"):
     sys.path.insert(0, str(ROOT / "packages" / extra))
 
-from rules.registry import RuleRegistry  # noqa: E402
+from rules.registry import RuleRegistry, TAXONOMY  # noqa: E402
 from vision.config import PipelineConfig  # noqa: E402
 from vision.pipeline import AnalysisError, AnalysisOptions, VideoAnalyzer  # noqa: E402
 from vision.videoprobe import probe, FrameReader  # noqa: E402
+from vision.oracle import code_for_annotation, load_annotations, oracle_inputs  # noqa: E402
+from vision.rule_engine import evaluate_rules  # noqa: E402
+from vision.triggers import Trigger  # noqa: E402
 
 CYR_X = "\u0425"  # Cyrillic capital HA
 
@@ -531,11 +535,19 @@ def main() -> int:
     parser.add_argument("--only", type=str, default="", help="Comma-separated list of clip IDs to evaluate (e.g. X-14,X-16)")
     parser.add_argument("--cluster-threshold", type=float, default=0.88, help="Clustering correlation threshold")
     parser.add_argument("--no-sheets", action="store_true", help="Skip contact sheet generation")
+    parser.add_argument("--oracle-events", type=Path, help="Offline ENGINE upper bound: inject annotated scenes AND actions, never a vision score")
+    parser.add_argument("--baseline-dir", type=Path, help="Existing baseline artifacts directory; never rerun baseline")
     args = parser.parse_args()
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = args.out_dir or (ROOT / "artifacts" / "eval" / timestamp)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if (out_dir / "run.json").exists():
+        parser.error("output directory already contains a run; refusing to overwrite evidence")
+    (out_dir / "run.json").write_text(json.dumps({"argv": sys.argv, "created_at": timestamp,
+        "config": json.loads(args.config.read_text()), "oracle_events": str(args.oracle_events) if args.oracle_events else None,
+        "oracle_semantics": "annotated scenes AND actions; engine-only upper bound, not vision accuracy"}, ensure_ascii=False, indent=2))
+    annotations = load_annotations(args.oracle_events) if args.oracle_events else None
 
     print(f"=== ForteVision Evaluation ===")
     print(f"Videos dir:   {args.videos}")
@@ -570,8 +582,24 @@ def main() -> int:
 
     # 4. Initialize pipeline analyzer
     cfg = PipelineConfig.load(args.config)
+    manifest = json.loads((out_dir / "run.json").read_text())
+    manifest.update({"effective_config": cfg.to_dict(),
+        "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "git_status": subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True),
+        "dataset": [{"video": e.primary_name, "aliases": e.aliases, "sha256": e.sha256,
+                     "duration_sec": e.duration_sec, "label": e.label_verdict} for e in active_entries],
+        "source_sha256": {str(p.relative_to(ROOT)): sha256_file(p)
+                          for pattern in ("packages/vision/vision/*.py", "packages/rules/rules/*.*", "configs/*.json")
+                          for p in ROOT.glob(pattern) if p.is_file()}})
+    (out_dir / "run.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     registry = RuleRegistry.load()
     analyzer = VideoAnalyzer(cfg=cfg, registry=registry, project_root=ROOT)
+    trace_dir = out_dir / "trace"
+    trace_dir.mkdir(exist_ok=True)
+    oracle_rows, oracle_scene_rows, oracle_unsupported = [], [], []
+    if annotations is not None:
+        (out_dir / "oracle/trace").mkdir(parents=True)
+        shutil.copyfile(args.oracle_events, out_dir / "oracle/events_input.csv")
 
     sheets_dir = out_dir / "sheets"
     sheets_dir.mkdir(parents=True, exist_ok=True)
@@ -584,8 +612,10 @@ def main() -> int:
 
     for idx, entry in enumerate(active_entries, 1):
         t0 = time.perf_counter()
+        res = None
+        error = None
         try:
-            res = analyzer.analyze(entry.path)
+            res = analyzer.analyze(entry.path, AnalysisOptions(keep_trace=True))
             runtime_sec = round(time.perf_counter() - t0, 2)
             pred_verdict = res.verdict
             events = res.events
@@ -593,10 +623,32 @@ def main() -> int:
             runtime_sec = round(time.perf_counter() - t0, 2)
             pred_verdict = "error"
             events = []
+            error = f"{type(exc).__name__}: {exc}"
             print(f"[{idx:02d}/{len(active_entries):02d}] {entry.primary_name}: ERROR: {exc}")
 
         # Format predicted events as type@timecode;…
         pred_events_str = ";".join(f"{e.event_code}@{e.peak_sec:.1f}" for e in events) if events else ""
+        evidence_records = {}
+        for event_index, event in enumerate(events):
+            saved = []
+            for frame_index, frame in enumerate(event.meta.get("evidence", [])):
+                target = out_dir / "evidence" / entry.primary_name / f"event{event_index}_frame{frame_index}.jpg"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(frame.jpeg_bytes)
+                saved.append({"timestamp_sec": frame.timestamp_sec, "path": str(target.relative_to(out_dir)),
+                              "sha256": hashlib.sha256(frame.jpeg_bytes).hexdigest(),
+                              "width": frame.width, "height": frame.height})
+            evidence_records[id(event)] = saved
+        trace_payload = {"video": entry.primary_name, "sha256": entry.sha256, "runtime_sec": runtime_sec,
+            "duration_sec": entry.duration_sec, "verdict": pred_verdict, "error": error,
+            "timings": res.timings if res else {}, "quality": res.quality if res else {},
+            "warnings": res.warnings if res else [], "events": [
+                {"code": e.event_code, "start_sec": e.start_sec, "timecode_sec": e.peak_sec,
+                 "end_sec": e.end_sec, "evidence_times": e.evidence_times,
+                 "evidence_frames": evidence_records[id(e)],
+                 "rule_id": e.rule_id, "description": e.observation + " " + e.hypothesis,
+                 "meta": {k: v for k, v in e.meta.items() if k != "evidence"}} for e in events]}
+        (trace_dir / f"{entry.primary_name}.json").write_text(json.dumps(trace_payload, ensure_ascii=False, indent=2))
 
         # Determine outcome
         actual_viol = entry.label_verdict == "violation"
@@ -609,6 +661,8 @@ def main() -> int:
             outcome = "FN"
         else:
             outcome = "TN"
+        if error:
+            outcome = "ERROR"  # an analysis error is not a valid negative verdict
 
         # Timecode error for TP
         label_ts_str = ";".join(str(int(t) if t.is_integer() else t) for t in entry.label_timestamps)
@@ -630,10 +684,42 @@ def main() -> int:
             "label_ts": label_ts_str,
             "pred_verdict": pred_verdict,
             "pred_events": pred_events_str,
+            "pred_codes": ";".join(sorted({e.event_code for e in events})),
             "runtime_sec": runtime_sec,
             "outcome": outcome,
         }
         results_rows.append(row)
+        if annotations is not None:
+            gt = annotations.get(entry.primary_name, [])
+            ot, oscenes, opresence, unsupported = oracle_inputs(gt, entry.duration_sec)
+            oracle_events = evaluate_rules(ot, oscenes, opresence, entry.duration_sec, registry, cfg.rules)
+            observed_triggers = [Trigger(**t) for t in res.quality["triggers"]] if res else []
+            observed_presence = {}
+            actual_trace = res.quality.get("trace", []) if res else []
+            for state in oscenes:
+                nearest = min(actual_trace, key=lambda f: abs(f["t"]-state.t), default=None)
+                if nearest and abs(nearest["t"]-state.t) <= 0.8:
+                    observed_presence[round(state.t, 4)] = {k: nearest[k] for k in ("cashier_present", "cashier_seated")}
+            scene_only_events = evaluate_rules(observed_triggers, oscenes, observed_presence,
+                                               entry.duration_sec, registry, cfg.rules)
+            scene_outcome = ("TP" if actual_viol else "FP") if scene_only_events else ("FN" if actual_viol else "TN")
+            oracle_scene_rows.append(dict(row, pred_verdict="violation" if scene_only_events else "no_violation",
+                pred_codes=";".join(sorted({e.event_code for e in scene_only_events})),
+                pred_events=";".join(f"{e.event_code}@{e.start_sec:.1f}" for e in scene_only_events),
+                outcome=scene_outcome, runtime_sec=0.0))
+            oracle_outcome = ("TP" if actual_viol else "FP") if oracle_events else ("FN" if actual_viol else "TN")
+            oracle_rows.append(dict(row, pred_verdict="violation" if oracle_events else "no_violation",
+                pred_codes=";".join(sorted({e.event_code for e in oracle_events})),
+                pred_events=";".join(f"{e.event_code}@{e.start_sec:.1f}" for e in oracle_events), outcome=oracle_outcome,
+                runtime_sec=0.0))  # no oracle inference is performed
+            oracle_unsupported.extend(dict(r, canonical_video=entry.primary_name) for r in unsupported)
+            (out_dir / "oracle/trace" / f"{entry.primary_name}.json").write_text(json.dumps({
+                "mode": "oracle_scene_and_actions", "not_vision_accuracy": True,
+                "triggers": [t.as_dict() for t in ot], "scenes": [asdict(s) for s in oscenes],
+                "events": [{"code": e.event_code, "t": e.start_sec, "rule_id": e.rule_id} for e in oracle_events],
+                "scene_only_observed_triggers": [t.as_dict() for t in observed_triggers],
+                "scene_only_events": [{"code": e.event_code, "t": e.start_sec} for e in scene_only_events],
+                "unsupported": unsupported}, ensure_ascii=False, indent=2))
 
         print(
             f"[{idx:02d}/{len(active_entries):02d}] {entry.display_name:16s} | "
@@ -642,7 +728,7 @@ def main() -> int:
             flush=True,
         )
 
-        if not args.no_sheets:
+        if not args.no_sheets and res is not None:
             sheet_file = sheets_dir / f"{entry.primary_name}.jpg"
             generate_contact_sheet(entry, res, outcome, sheet_file)
 
@@ -658,6 +744,7 @@ def main() -> int:
             "label_ts",
             "pred_verdict",
             "pred_events",
+            "pred_codes",
             "runtime_sec",
             "outcome",
         ]
@@ -695,6 +782,8 @@ def main() -> int:
         }
 
     overall_metrics = calc_metrics(results_rows, timecode_errors)
+    overall_metrics["analysis_errors"] = sum(r["outcome"] == "ERROR" for r in results_rows)
+    overall_metrics["rows"] = len(results_rows)
     by_angle_group: dict[str, dict] = {}
     for g in unique_groups:
         g_rows = [r for r in results_rows if r["angle_group"] == g]
@@ -705,6 +794,46 @@ def main() -> int:
         "summary": overall_metrics,
         "by_angle_group": by_angle_group,
     }
+    def typed_metrics(rows):
+        by_code = {}
+        for code in TAXONOMY:
+            counts = dict(tp=0, fp=0, fn=0, tn=0)
+            for row in rows:
+                if row["pred_verdict"] == "error":
+                    continue
+                primary = row["video"].split(" ")[0]
+                truth = {code_for_annotation(a) for a in annotations.get(primary, [])}
+                predicted = set(row["pred_codes"].split(";"))
+                key = ("tp" if code in truth else "fp") if code in predicted else ("fn" if code in truth else "tn")
+                counts[key] += 1
+            by_code[code] = counts
+        return by_code
+    if annotations is not None:
+        metrics_payload["by_type"] = typed_metrics(results_rows)
+    metrics_payload["runtime_sec"] = {"per_video": {r["video"]: r["runtime_sec"] for r in results_rows},
+        "max": max((r["runtime_sec"] for r in results_rows), default=None),
+        "sum": sum(r["runtime_sec"] for r in results_rows)}
+    if annotations is not None:
+        oracle_metrics = {"summary": calc_metrics(oracle_rows, []), "unsupported_rows": oracle_unsupported,
+            "scene_only_observed_actions_summary": calc_metrics(oracle_scene_rows, []),
+            "by_type": typed_metrics(oracle_rows), "scene_only_by_type": typed_metrics(oracle_scene_rows),
+            "mode": "oracle_scene_and_actions", "not_vision_accuracy": True,
+            "note": "Ideal annotated actions AND scenes, tested through the same rule engine; unsupported annotations are not invented."}
+        (out_dir / "oracle/metrics.json").write_text(json.dumps(oracle_metrics, ensure_ascii=False, indent=2))
+        with (out_dir / "oracle/results.csv").open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(results_rows[0]) if results_rows else [])
+            w.writeheader()
+            w.writerows(oracle_rows)
+        with (out_dir / "oracle/scene_only_results.csv").open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(results_rows[0]) if results_rows else [])
+            w.writeheader()
+            w.writerows(oracle_scene_rows)
+    if args.baseline_dir:
+        baseline = json.loads((args.baseline_dir / "metrics.json").read_text())
+        metrics_payload["baseline_comparison"] = {"source": str(args.baseline_dir), "baseline": baseline["summary"],
+            "delta": {key: overall_metrics[key]-baseline["summary"][key] for key in ("tp", "fp", "fn", "tn")}}
+    else:
+        metrics_payload["baseline_comparison"] = {"status": "not_available", "reason": "No baseline metrics.json supplied; no baseline run was launched."}
 
     metrics_path = out_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -718,7 +847,7 @@ def main() -> int:
     print("=" * 50)
     print(json.dumps(metrics_payload, ensure_ascii=False, indent=2))
 
-    return 0
+    return 1 if overall_metrics["analysis_errors"] else 0
 
 
 if __name__ == "__main__":

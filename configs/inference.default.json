@@ -1,5 +1,9 @@
 {
   "sampling": {
+    "coarse_fps": 1.5,
+    "dense_fps": 5.0,
+    "window_padding_sec": 4.0,
+    "motion_threshold": 12.0,
     "target_frames": 420,
     "min_fps": 2.0,
     "max_fps": 6.0,
@@ -7,9 +11,13 @@
     "short_clip_duration": 20.0
   },
   "detector": {
-    "model_path": "packages/vision/models/nanodet.onnx",
+    "model_path": "packages/vision/models/nanodet_416.onnx",
     "model_name": "nanodet_plus_m_1.5x_416",
     "input_size": 416,
+    "coarse_input_size": 416,
+    "coarse_model_path": "packages/vision/models/nanodet_416.onnx",
+    "intra_op_num_threads": 1,
+    "track_low_score": 0.15,
     "min_score": 0.30,
     "nms_threshold": 0.55,
     "motion_fallback": false,
@@ -36,7 +44,7 @@
     "blur_ksize": 3
   },
   "ev01": {
-    "enabled": true,
+    "enabled": false,
     "min_absence_sec": 2.0,
     "absence_gap_tolerance_sec": 0.8,
     "pre_window_sec": 4.0,
@@ -46,7 +54,7 @@
     "min_confidence": 0.35
   },
   "ev02": {
-    "enabled": true,
+    "enabled": false,
     "min_persist_sec": 2.0,
     "min_unattended_sec": 1.5,
     "min_confidence": 0.40
@@ -57,6 +65,7 @@
     "jpeg_quality": 85
   },
   "post_zone_override": null,
+  "rules": {"scene_threshold": 0.7, "door_hold_sec": 3.0, "min_outsider_sec": 0.6, "min_scene_sec": 0.6},
   "max_events": 6,
   "merge_gap_sec": 3.0,
   "prefer_absence_event": true

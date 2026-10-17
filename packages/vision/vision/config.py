@@ -24,11 +24,16 @@ class SamplingConfig:
     short_clip_duration: float = 20.0
     #: decode frames down to this width for the analysis pass (evidence stays full)
     decode_max_width: int = 960
+    coarse_fps: float = 1.5
+    dense_fps: float = 5.0
+    window_padding_sec: float = 4.0
+    motion_threshold: float = 12.0
+    cache_max_mb: int = 64
 
 
 @dataclass
 class DetectorConfig:
-    model_path: str = "packages/vision/models/nanodet.onnx"
+    model_path: str = "packages/vision/models/nanodet_416.onnx"
     model_name: str = "nanodet_plus_m_1.5x_416"
     input_size: int = 416
     min_score: float = 0.30
@@ -36,13 +41,25 @@ class DetectorConfig:
     #: motion-blob fallback when the neural detector finds nothing on an active frame
     motion_fallback: bool = False
     motion_min_area_ratio: float = 0.006
+    intra_op_num_threads: int = 1
+    track_low_score: float = 0.15
+    coarse_input_size: int = 416
+    coarse_model_path: str = "packages/vision/models/nanodet_416.onnx"
+
+
+@dataclass
+class RuleEngineConfig:
+    scene_threshold: float = 0.7
+    door_hold_sec: float = 3.0
+    min_outsider_sec: float = 0.6
+    min_scene_sec: float = 0.6
 
 
 @dataclass
 class Ev01Config:
     """Cashier leaves the workplace (rule KZ-CASH-231-P22)."""
 
-    enabled: bool = True
+    enabled: bool = False
     min_absence_sec: float = 2.0
     #: gaps inside an absence shorter than this are treated as detector flicker
     absence_gap_tolerance_sec: float = 0.8
@@ -60,7 +77,7 @@ class Ev01Config:
 class Ev02Config:
     """Objects (visually: cash/valuables) left on the open workplace surface (KZ-CASH-231-P20)."""
 
-    enabled: bool = True
+    enabled: bool = False
     min_persist_sec: float = 2.0
     min_unattended_sec: float = 1.5
     min_confidence: float = 0.40
@@ -82,6 +99,7 @@ class PipelineConfig:
     ev01: Ev01Config = field(default_factory=Ev01Config)
     ev02: Ev02Config = field(default_factory=Ev02Config)
     evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
+    rules: RuleEngineConfig = field(default_factory=RuleEngineConfig)
     #: fixed workplace rectangle as frame fractions, disables automatic zone inference
     post_zone_override: tuple[float, float, float, float] | None = None
     max_events: int = 6
@@ -102,6 +120,7 @@ class PipelineConfig:
             "ev01": Ev01Config,
             "ev02": Ev02Config,
             "evidence": EvidenceConfig,
+            "rules": RuleEngineConfig,
         }
         for key, klass in nested.items():
             if key in data and isinstance(data[key], dict):
