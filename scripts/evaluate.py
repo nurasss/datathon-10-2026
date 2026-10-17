@@ -649,6 +649,8 @@ def main() -> int:
                               "width": frame.width, "height": frame.height})
             evidence_records[id(event)] = saved
         trace_payload = {"video": entry.primary_name, "sha256": entry.sha256, "runtime_sec": runtime_sec,
+            "triggers": res.quality.get("action_trace", []) if res else [],
+            "rule_decisions": res.quality.get("rule_decisions", []) if res else [],
             "duration_sec": entry.duration_sec, "verdict": pred_verdict, "error": error,
             "timings": res.timings if res else {}, "quality": res.quality if res else {},
             "warnings": res.warnings if res else [], "events": [

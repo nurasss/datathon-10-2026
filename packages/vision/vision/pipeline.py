@@ -310,7 +310,9 @@ class VideoAnalyzer:
                      "tracking_detections": [normalized_detection(d, w, h) for d in dets if d.label == "person"],
                     "desk_objects": [d for d in norm if d["cls"] in DESK_CLASSES and post.contains((d["box"][0]+d["box"][2])*w/2, (d["box"][1]+d["box"][3])*h/2)],
                     "scene": asdict(scenes_at[obs.t]) if obs.t in scenes_at else None})
-        events = evaluate_rules(triggers, scene_states, presence, meta.duration_sec, self.registry, self.cfg.rules)[:self.cfg.max_events]
+        decisions = [] if options.keep_trace else None
+        events = evaluate_rules(triggers, scene_states, presence, meta.duration_sec, self.registry, self.cfg.rules,
+                                decisions=decisions, track_roles={tr.track_id: tr.role for tr in tracks})[:self.cfg.max_events]
         timings["tracking_rules"] = time.perf_counter()-t0
         t0 = time.perf_counter()
         if events:
@@ -340,6 +342,10 @@ class VideoAnalyzer:
         quality["scene_reference"] = "first_dense_frame_of_clip_not_batch"
         if options.keep_trace:
             quality["trace"] = trace
+            quality["rule_decisions"] = decisions
+            quality["action_trace"] = [{"kind": t.kind, "start": t.t, "end": t.end,
+                "track_id": t.track_id, "role": next((tr.role for tr in tracks if tr.track_id == t.track_id), "unknown")}
+                for t in triggers]
         warnings = ["door_zone_uncalibrated"]
         if quality["scene_stub"]:
             warnings.append("scene_unknown: scene-dependent rules cannot fire")
