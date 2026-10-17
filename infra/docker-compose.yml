@@ -1,0 +1,46 @@
+# ForteVision deployment (single service, single worker, CPU only).
+#
+# The container joins the existing external network of the host's reverse proxy
+# so that the public HTTPS site can proxy to it by container name.  Secrets come
+# from configs/service.env (never committed).
+services:
+  forte-vision:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    image: forte-vision:1.0.0
+    container_name: forte-vision
+    restart: unless-stopped
+    env_file:
+      - ../configs/service.env
+    environment:
+      FV_PROJECT_ROOT: /app
+      FV_DATA_DIR: /data
+      FV_INFERENCE_CONFIG: /app/configs/inference.default.json
+      FV_JOB_TIMEOUT_SEC: "280"
+      FV_MAX_QUEUE: "6"
+      FV_MAX_UPLOAD_MB: "512"
+      FV_RETENTION_HOURS: "72"
+      FV_WORKER_ENABLED: "true"
+    volumes:
+      - forte_vision_data:/data
+    # Resource guard-rails: the host runs other production containers.
+    mem_limit: 900m
+    memswap_limit: 1200m
+    cpus: 1.5
+    networks:
+      - proxy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
+    name: timetrack_timetrack
+
+volumes:
+  forte_vision_data:
+    name: forte_vision_data

@@ -1,0 +1,12 @@
+# Runtime dependencies of the API service (installed inside the container).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.0
+# Local computer vision (CPU only, no cloud inference)
+numpy==2.2.1
+opencv-python-headless==4.10.0.84
+# Tests / acceptance
+httpx==0.28.1
+pytest==8.3.4

@@ -1,0 +1,63 @@
+{
+  "sampling": {
+    "target_frames": 420,
+    "min_fps": 2.0,
+    "max_fps": 6.0,
+    "short_clip_fps": 4.0,
+    "short_clip_duration": 20.0
+  },
+  "detector": {
+    "model_path": "packages/vision/models/nanodet.onnx",
+    "model_name": "nanodet_plus_m_1.5x_416",
+    "input_size": 416,
+    "min_score": 0.30,
+    "nms_threshold": 0.55,
+    "motion_fallback": false,
+    "motion_min_area_ratio": 0.006
+  },
+  "zones": {
+    "fallback_post_rect": [0.30, 0.30, 0.72, 0.92],
+    "cluster_rel_threshold": 0.35,
+    "min_zone_width_frac": 0.26,
+    "min_zone_height_frac": 0.22,
+    "grid_blur_ksize": 3,
+    "min_presence_share": 0.22,
+    "post_margin": 0.12,
+    "counter_margin": 0.75,
+    "counter_margin_cap": 0.30
+  },
+  "desk": {
+    "small_width": 160,
+    "diff_threshold": 22,
+    "min_blob_area_ratio": 0.02,
+    "min_blob_px": 22,
+    "person_pad_ratio": 0.06,
+    "roi_expand": 0.25,
+    "blur_ksize": 3
+  },
+  "ev01": {
+    "enabled": true,
+    "min_absence_sec": 2.0,
+    "absence_gap_tolerance_sec": 0.8,
+    "pre_window_sec": 4.0,
+    "post_window_sec": 2.0,
+    "min_client_sec": 1.0,
+    "client_gap_tolerance_sec": 2.0,
+    "min_confidence": 0.35
+  },
+  "ev02": {
+    "enabled": true,
+    "min_persist_sec": 2.0,
+    "min_unattended_sec": 1.5,
+    "min_confidence": 0.40
+  },
+  "evidence": {
+    "max_frames_per_event": 3,
+    "max_width": 960,
+    "jpeg_quality": 85
+  },
+  "post_zone_override": null,
+  "max_events": 6,
+  "merge_gap_sec": 3.0,
+  "prefer_absence_event": true
+}

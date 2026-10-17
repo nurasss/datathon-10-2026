@@ -1,0 +1,1 @@
+"""Approved rule registry package."""
