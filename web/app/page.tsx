@@ -1,103 +1,107 @@
-'use client';
-import { post, get } from "./mock";
-import { useState, useEffect, SubmitEventHandler } from "react";
-// import Image from "next/image";
+"use client";
+import { useState } from "react";
+import { AppShell } from "./components/app-shell";
+import { UploadView } from "./components/upload-view";
+import { JobView } from "./components/job-view";
+import type { Violation } from "../lib/contracts";
 
-function FileUploadForm({ setJobID }: { setJobID: (jobId: string) => void }) {
-	const [file, setFile] = useState<File | null>(null);
-	const handleFile = (event: React.ChangeEvent<HTMLInputElement>) => {
-		const value = event.target.files?.[0];
-		if (value && value.type !== "video/quicktime") {
-			alert("Please upload a valid .mov video file.");
-			event.target.value = "";
-			setFile(null);
-			return;
-		} 
-		setFile(value || null);
-	};
-	const handleUpload = async (e: React.SyntheticEvent<HTMLFormElement>) => {
-		e.preventDefault();
-		if (file) {
-			alert(`Uploading file: ${file.name}`);
-			try {
-				setJobID(await post(file));
-			} catch (error) {
-				console.error("Error uploading file:", error);
-			}
-		} else {
-			alert("Please select a file to upload.");
-		}
-	};
-	return (
-		<form onSubmit={handleUpload}>
-			<input type="file" onChange={handleFile} />
-			<input type="submit" value="Upload" />
-		</form>
-	);
-}
+type Screen = "upload" | "processing" | "result" | "clear" | "error";
+const screens: [Screen, string][] = [
+  ["upload", "Загрузка"],
+  ["processing", "Ожидание"],
+  ["result", "Результат"],
+  ["clear", "Без событий"],
+  ["error", "Ошибка"],
+];
+const examples: Violation[] = [
+  {
+    type: "Пример события для проверки",
+    timecode_sec: 12,
+    description:
+      "Здесь будет описание наблюдения, полученное от сервиса анализа. Это вымышленный пример для просмотра оформления.",
+    evidence_frames: [],
+  },
+  {
+    type: "Пример второго события",
+    timecode_sec: 63,
+    description:
+      "Каждое событие содержит время, описание, кадры и нормативное основание, если оно передано сервером.",
+    evidence_frames: [],
+  },
+];
 
-function JobStatus({ statusId }: { statusId: string }) {
-
-	const [status, setStatus] = useState<string | null>(null);
-	const [verdict, setVerdict] = useState<string | null>(null);
-	const [violations, setViolations] = useState<any[] | null>(null);
-
-	useEffect(() => {
-		const interval = setInterval(async () => {
-			try {
-				const result = await get(statusId);
-				if (result) {
-					setStatus(result.status);
-					setVerdict(result.verdict);
-					setViolations(result.violations || []);
-					if (result.status === "done" || result.status === "error") {
-						clearInterval(interval);
-					}
-				}
-			} catch (error) {
-				console.error("Error fetching job status:", error);
-			}
-		}, 2000); // Poll every 2 seconds
-
-		return () => clearInterval(interval);
-	}, [statusId]);
-
-	return (
-		<div>
-			<p>Job ID: {statusId}</p>
-			<p>Status: {status}</p>
-			{status === "done" && (
-				<div>
-					<p>Verdict: {verdict}</p>
-					{verdict === "violation" && violations && (
-						<div>
-							<h3>Violations:</h3>
-							<ul>
-								{violations.map((violation, index) => (
-									<li key={index}>
-										Type: {violation.type}, Timecode: {violation.timecode_sec}, Description: {violation.description}
-									</li>
-								))}
-							</ul>
-						</div>
-					)}
-				</div>
-			)}
-			{status === "error" && <p>An error occurred while processing the job.</p>}
-		</div>
-	);
-}
-
-export default function Home() {
-	const [jobId, setJobId] = useState<string | null>(null);
-	let JobView = jobId ? <JobStatus statusId={jobId} /> : <FileUploadForm setJobID={setJobId}/>;
-	return (
-		<div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-		<main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-		
-		{JobView}
-
-		</main>
-		</div>
-	);
+export default function DesignPreview() {
+  const [screen, setScreen] = useState<Screen>("upload");
+  const [file, setFile] = useState<File | null>(null);
+  return (
+    <AppShell>
+      <section className="fv-preview-bar" aria-label="Просмотр дизайна">
+        <div>
+          <strong>Просмотр дизайна</strong>
+          <p>Вымышленные примеры. Видео не отправляются и не анализируются.</p>
+        </div>
+        <nav aria-label="Экраны интерфейса">
+          {screens.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className="fv-secondary-button"
+              aria-pressed={screen === value}
+              onClick={() => setScreen(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </section>
+      {screen === "upload" ? (
+        <UploadView
+          file={file}
+          maxBytes={104857600}
+          onFileSelect={setFile}
+          onSubmit={(event) => {
+            event.preventDefault();
+            setScreen("processing");
+          }}
+        />
+      ) : (
+        <>
+          <div className="fv-toolbar">
+            <button
+              type="button"
+              className="fv-secondary-button"
+              onClick={() => setScreen("upload")}
+            >
+              К загрузке
+            </button>
+            <span className="fv-muted">Пример интерфейса · demo.mov</span>
+          </div>
+          <JobView
+            preview
+            key={screen}
+            jobId="DEMO"
+            status={
+              screen === "processing"
+                ? "processing"
+                : screen === "error"
+                  ? "failed"
+                  : "done"
+            }
+            verdict={screen === "clear" ? "no_violation" : "violation"}
+            violations={screen === "result" ? examples : []}
+            duration={94}
+          />
+          {screen === "processing" && (
+            <button
+              type="button"
+              className="fv-primary-button fv-preview-next"
+              onClick={() => setScreen("result")}
+            >
+              Показать пример результата
+            </button>
+          )}
+        </>
+      )}
+    </AppShell>
+  );
 }

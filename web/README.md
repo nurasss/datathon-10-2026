@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ForteVision — веб-интерфейс
 
-## Getting Started
+**Текущий режим:** главная страница `/` — просмотр дизайна без сервера и ключа. Переключатели показывают загрузку, ожидание, вымышленный результат, отсутствие событий и ошибку. Выбранные файлы не отправляются и не анализируются. Плеер и кадры представлены нейтральными макетами.
 
-First, run the development server:
+Подготовленное подключение к API сохранено отдельно на `/connected` (`app/components/connected-home.tsx`). Настройки ниже нужны только для него. Для просмотра дизайна достаточно запуска Next.js без `.env.local`.
 
-```bash
+Интерфейс подключён к API команды: вход по ключу, загрузка MOV, ожидание, результат, исходное видео, переход по таймкодам, доказательные кадры и нормативный источник. `app/mock.ts` сохранён, но больше не подключён к странице. Python-бэкенд не изменён.
+
+## Запуск
+
+```sh
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Перед запуском создайте `.env.local` в папке `web`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```dotenv
+FV_BACKEND_URL=http://127.0.0.1:8000
+FV_APP_ORIGIN=http://localhost:3000
+FV_MAX_UPLOAD_BYTES=104857600
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Замените адреса фактическими. Backend URL должен быть доступен серверу Next.js; APP ORIGIN — точный адрес сайта в браузере, включая порт. После изменения настроек перезапустите Next.js. Ключ в файл не добавляйте: пользователь вводит API-ключ из `FV_API_KEYS` команды на экране входа. `FV_UI_KEY` относится к отдельному Python-интерфейсу. `.env.local` исключён из Git.
 
-## Learn More
+Production: `npm run build`, затем `npm exec next start`. В текущей Windows-среде Turbopack завершается с ошибкой дочернего CSS-процесса. Проверенная альтернатива: `npm exec next build -- --webpack` на Node.js 24.19.0. Конфигурация и зависимости команды сохранены.
 
-To learn more about Next.js, take a look at the following resources:
+## Структура
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Файл | Назначение |
+|---|---|
+| `app/page.tsx` | Просмотр дизайна с вымышленными примерами без API |
+| `app/components/connected-home.tsx` | Рабочий сценарий: сессия, отправка, опрос и восстановление задачи |
+| `app/components/login-view.tsx` | Ввод ключа |
+| `app/components/upload-view.tsx` | Выбор файла и отправка |
+| `app/components/job-view.tsx` | Статус, плеер, события, кадры и источники |
+| `app/components/app-shell.tsx` | Общая разметка |
+| `app/globals.css` | Стили и адаптивность |
+| `app/api.ts` | Запросы браузера к серверу Next.js |
+| `app/ui/api/[...path]/route.ts` | Маршруты Next.js |
+| `lib/server-proxy.ts` | Серверные сессии, передача запросов и видео в API команды |
+| `lib/contracts.ts` | Типы и проверка ответов |
+| `tests/integration.cjs` | Проверка с искусственным API и синтетическим видео |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Подключение и ограничения: [docs/integration.md](docs/integration.md). Предыдущий этап дизайна: [docs/design.md](docs/design.md).
 
-## Deploy on Vercel
+Текущий стек Next.js сохранён из проекта команды. ТЗ перечисляет Vite/FastAPI: выбор Next.js требует фиксации командой в ТЗ, переписывание проекта не выполнялось. Полная приёмка требует реального API, публичного адреса и Chrome/Safari; тесты с fixtures этого не заменяют.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Конкурсные видео, кадры и описания не передавайте облачным AI-инструментам. Для автоматической проверки используются только вымышленные данные.
