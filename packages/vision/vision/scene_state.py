@@ -85,7 +85,7 @@ def analyze_scene(
     ctx = context or {}
 
     # Check Colab YOLOX hook
-    enable_yolox = ctx.get("enable_colab_yolox", True)
+    enable_yolox = ctx.get("enable_colab_yolox", False)
     yolox = get_colab_yolox_detector() if enable_yolox else None
     use_yolox = yolox is not None and yolox.is_available()
 
