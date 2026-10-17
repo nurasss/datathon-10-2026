@@ -34,7 +34,7 @@ class Settings:
     """Runtime configuration of the service."""
 
     #: directory that holds the SQLite DB, uploads and evidence frames
-    data_dir: Path = field(default_factory=lambda: Path(os.environ.get("FV_DATA_DIR", "data")))
+    data_dir: Path = field(default_factory=lambda: Path(os.environ.get("FV_DATA_DIR", "data")).resolve())
     #: project root (defaults to the repository root two levels above this file)
     project_root: Path = field(
         default_factory=lambda: Path(
@@ -51,21 +51,18 @@ class Settings:
             k.strip() for k in os.environ.get("FV_API_KEYS", "").split(",") if k.strip()
         ]
     )
+    ui_key: str = field(default_factory=lambda: os.environ.get("FV_UI_KEY", ""))
     #: secret used to sign the browser session cookie
     secret: str = field(default_factory=lambda: os.environ.get("FV_SECRET") or secrets.token_hex(16))
-    max_upload_bytes: int = _int("FV_MAX_UPLOAD_MB", 512) * 1024 * 1024
+    max_upload_bytes: int = min(100, max(1, _int("FV_MAX_UPLOAD_MB", 100))) * 1024 * 1024
     max_queue: int = _int("FV_MAX_QUEUE", 8)
-    job_timeout_sec: float = _float("FV_JOB_TIMEOUT_SEC", 280.0)
-    max_duration_sec: float = _float("FV_MAX_DURATION_SEC", 900.0)
+    job_timeout_sec: float = min(280.0, max(0.1, _float("FV_JOB_TIMEOUT_SEC", 280.0)))
     retention_hours: float = _float("FV_RETENTION_HOURS", 72.0)
     public_base_url: str = os.environ.get("FV_PUBLIC_BASE_URL", "")
     service_name: str = os.environ.get("FV_SERVICE_NAME", "ForteVision")
-    require_api_key_for_ui: bool = _bool("FV_UI_REQUIRES_KEY", True)
     #: in-process worker (single job at a time — matches the 2 vCPU target box)
     worker_enabled: bool = _bool("FV_WORKER_ENABLED", True)
     worker_poll_sec: float = _float("FV_WORKER_POLL_SEC", 1.0)
-    #: hard safety valve: never start more than N analyses in parallel
-    worker_concurrency: int = _int("FV_WORKER_CONCURRENCY", 1)
 
     @property
     def uploads_dir(self) -> Path:

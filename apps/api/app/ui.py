@@ -128,13 +128,13 @@ def page_index(settings: Settings, authenticated: bool, store: JobStore, manager
     registry = load_registry()
     approved = registry.approved_rules()
     queue = store.queue_length()
-    if not authenticated and settings.require_api_key_for_ui:
+    if not authenticated and settings.ui_key:
         form = (
             "<div class=card><h3>Вход в интерфейс</h3>"
-            "<p class=small class=muted>Введите API-ключ, выданный организатором. Ключ проверяется "
+            "<p class=small class=muted>Введите отдельный ключ веб-интерфейса (FV_UI_KEY). Ключ проверяется "
             "на сервере и в браузере не сохраняется (используется подписанная сессия).</p>"
             "<form class=stack method=post action='/ui/login'>"
-            "<input type=password name=api_key placeholder='X-API-Key' required>"
+            "<input type=password name=api_key placeholder='Ключ интерфейса' required>"
             "<button type=submit>Войти</button></form></div>"
         )
         upload = ""
@@ -145,7 +145,7 @@ def page_index(settings: Settings, authenticated: bool, store: JobStore, manager
             "<input type=file name=file accept='video/quicktime,.mov' required>"
             "<button type=submit>Отправить на анализ</button>"
             "<span class=small class=muted>Один кассовый пост, верхний или боковой ракурс, "
-            "длительность до 15 минут, размер до 512 МБ.</span>"
+            "размер до 100 МБ. Лимит обработки, включая очередь: 280 секунд.</span>"
             "</form></div>"
         )
         form = ""
@@ -400,9 +400,9 @@ def page_health(
         + f"<div>Лимит времени на задачу</div><div>{int(settings.job_timeout_sec)} с</div>"
         + f"<div>Последняя ошибка работника</div><div>{_esc(manager.last_error or '—')}</div>"
         + "</div></div><div class=card><h3>Проверки</h3><ul class=limits>"
-        + "<li>JSON-схема ответа: <code>docs/API.md</code>, валидатор <code>tests/test_contract.py</code></li>"
+        + "<li>JSON-схема ответа: <code>apps/api/app/schemas.py</code>, тесты <code>tests/test_contract.py</code></li>"
         + "<li>Изоляция декодера: ffprobe выполняется отдельным процессом с таймаутом</li>"
-        + "<li>Отсутствие внешних AI-вызовов: см. <code>docs/ARCHITECTURE.md</code> и offline-тест</li>"
+        + "<li>Локальный OpenCV DNN, без облачных AI API, распознавания лиц и звука</li>"
         + "</ul></div></div>"
         + _footer()
         + "</body></html>"
@@ -414,7 +414,7 @@ def page_login_required() -> str:
         _head("Требуется вход — ForteVision")
         + _header(False)
         + "<div class=wrap><h1>Требуется вход</h1><div class=card>"
-        "Откройте <a href='/'>главную страницу</a> и введите API-ключ.</div></div></body></html>"
+        "Откройте <a href='/'>главную страницу</a> и введите ключ интерфейса.</div></div></body></html>"
     )
 
 

@@ -4,32 +4,32 @@ Public contract:
     POST /api/v1/analyze        multipart ``file`` + ``X-API-Key`` -> 202 job_id
     GET  /api/v1/jobs/{job_id}  -> status in {processing, done, failed}
 
-The browser UI uses a signed session cookie obtained by entering the same API
-key once; the key itself is never embedded in HTML or JavaScript.
+The browser UI is separate: optional FV_UI_KEY + signed cookie, never the jury key.
 """
 
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
 import logging
 import logging.config
-import shutil
-import subprocess
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from . import ui
 from .config import Settings, load_settings
 from .db import Job, JobStore
-from .schemas import AnalyzeAccepted, HealthResponse, JobResponse, Violation
+from .schemas import AnalyzeAccepted, HealthResponse, JobResponse, FailedJob, ProcessingJob
+from .results import done_response
 from .security import SESSION_COOKIE, check_api_key, create_session, verify_session
 from .worker import JobManager
+from .middleware import UploadGuard
 
 VERSION = "1.0.0"
 LOGGING_CONFIG = {
@@ -47,12 +47,24 @@ store = JobStore(settings.db_path)
 manager = JobManager(settings, store)
 STARTED_AT = time.time()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _startup()
+    try:
+        yield
+    finally:
+        _shutdown()
+
+
 app = FastAPI(
     title="ForteVision — признаки нарушений кассовой дисциплины",
     version=VERSION,
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
+app.add_middleware(UploadGuard, settings=settings)
 
 
 # --------------------------------------------------------------------------------------
@@ -60,7 +72,6 @@ app = FastAPI(
 # --------------------------------------------------------------------------------------
 
 
-@app.on_event("startup")
 def _startup() -> None:
     settings.ensure_dirs()
     if not settings.api_keys:
@@ -75,7 +86,6 @@ def _startup() -> None:
         log.warning("worker disabled by configuration (FV_WORKER_ENABLED=false)")
 
 
-@app.on_event("shutdown")
 def _shutdown() -> None:
     manager.stop()
 
@@ -93,6 +103,8 @@ def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> str:
 
 
 def current_session(request: Request) -> Optional[str]:
+    if not settings.ui_key:
+        return "ui"
     return verify_session(settings.secret, request.cookies.get(SESSION_COOKIE))
 
 
@@ -128,7 +140,7 @@ async def analyze(
 ) -> AnalyzeAccepted:
     filename = file.filename or "upload.mov"
     suffix = Path(filename).suffix.lower()
-    if suffix not in (".mov", ".qt"):
+    if suffix != ".mov":
         raise HTTPException(status_code=415, detail="Ожидается файл .mov")
     if store.queue_length() >= settings.max_queue:
         raise HTTPException(
@@ -137,9 +149,10 @@ async def analyze(
             headers={"Retry-After": "30"},
         )
 
-    job_id = store.create_job(filename, 0, "", client_ip=_client_ip(request))
+    job_id = uuid.uuid4().hex[:12]
     target = settings.uploads_dir / f"{job_id}.mov"
     size = 0
+    digest = hashlib.sha256()
     try:
         with open(target, "wb") as out:
             while True:
@@ -153,36 +166,32 @@ async def analyze(
                         detail=f"Файл превышает {settings.max_upload_bytes // (1024 * 1024)} МБ",
                     )
                 out.write(chunk)
+                digest.update(chunk)
     except HTTPException:
         target.unlink(missing_ok=True)
-        store.fail(job_id, "UPLOAD_REJECTED", "файл отклонён по размеру")
         raise
     except Exception as exc:  # noqa: BLE001
         target.unlink(missing_ok=True)
-        store.fail(job_id, "UPLOAD_FAILED", f"{type(exc).__name__}")
         raise HTTPException(status_code=500, detail="Не удалось сохранить файл") from exc
     finally:
         await file.close()
 
     if size == 0:
         target.unlink(missing_ok=True)
-        store.fail(job_id, "EMPTY_FILE", "пустой файл")
         raise HTTPException(status_code=422, detail="Пустой файл")
 
-    with _connect_job_row(job_id):
-        pass
-    _update_size(job_id, size)
-
-    probe_error = _validate_video(target)
-    if probe_error is not None:
-        store.fail(job_id, "UNSUPPORTED_VIDEO", probe_error)
-        raise HTTPException(status_code=422, detail=probe_error)
+    # Publish only a completely written upload. Probing/decoding is child-process work.
+    if store.queue_length() >= settings.max_queue:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=429, detail="Очередь обработки заполнена")
+    store.create_job(filename, size, digest.hexdigest(), client_ip=_client_ip(request), job_id=job_id)
 
     return AnalyzeAccepted(job_id=job_id)
 
 
 @app.get("/api/v1/jobs/{job_id}", response_model=JobResponse)
 def get_job(job_id: str, _key: str = Depends(require_api_key)) -> JobResponse:
+    store.expire(settings.job_timeout_sec)
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
@@ -213,55 +222,19 @@ def stats(_key: str = Depends(require_api_key)) -> dict:
 
 def _job_response(job: Job) -> JobResponse:
     if job.status == "done":
-        violations: list[Violation] = []
-        for event in job.events:
-            frames = []
-            for frame in event.get("evidence", []):
-                data = _read_evidence(frame.get("path", ""))
-                if data is None:
-                    continue
-                frames.append(
-                    {
-                        "timestamp_sec": float(frame.get("timestamp_sec", 0.0)),
-                        "image_base64": base64.b64encode(data).decode("ascii"),
-                    }
-                )
-            if not frames:
-                # Contract: every event carries 1..3 real frames. An event whose
-                # frames cannot be re-read is dropped rather than faked.
-                log.error("job %s event %s has no readable evidence", job.job_id, event.get("event_id"))
-                continue
-            violations.append(
-                Violation(
-                    type=str(event.get("type", "")),
-                    timecode_sec=float(event.get("timecode_sec", 0.0)),
-                    description=str(event.get("description", "")),
-                    evidence_frames=frames[:3],
-                )
-            )
-        verdict = "violation" if violations else "no_violation"
-        return JobResponse(
-            job_id=job.job_id,
-            status="done",
-            verdict=verdict,
-            violations=violations,
-            progress=1.0,
-            phase="finished",
-        )
+        try:
+            return done_response(job, settings.evidence_dir)
+        except (ValueError, KeyError, TypeError, OSError):
+            log.exception("job %s has invalid result/evidence", job.job_id)
+            store.fail(job.job_id, "INVALID_RESULT", "результат или evidence повреждены")
+            return FailedJob(job_id=job.job_id, status="failed", error="Некорректный результат анализа (INVALID_RESULT)")
     if job.status == "failed":
-        return JobResponse(
+        return FailedJob(
             job_id=job.job_id,
             status="failed",
             error=_safe_error(job),
-            phase="finished",
         )
-    return JobResponse(
-        job_id=job.job_id,
-        status="processing",
-        progress=round(job.progress or 0.0, 3),
-        phase=job.phase,
-        queue_position=store.queue_position(job.job_id),
-    )
+    return ProcessingJob(job_id=job.job_id, status="processing")
 
 
 def _safe_error(job: Job) -> str:
@@ -292,7 +265,7 @@ def index(request: Request) -> HTMLResponse:
 
 @app.post("/ui/login")
 def ui_login(api_key: str = Form(...)) -> Response:
-    key_id = check_api_key(api_key, settings.api_keys)
+    key_id = check_api_key(api_key, [settings.ui_key] if settings.ui_key else [])
     if key_id is None:
         return HTMLResponse(ui.page_login_error(), status_code=401)
     response = RedirectResponse(url="/", status_code=303)
@@ -336,16 +309,19 @@ def exec_status(exc: HTTPException) -> int:
 def ui_job(job_id: str, request: Request) -> HTMLResponse:
     if current_session(request) is None:
         return HTMLResponse(ui.page_login_required(), status_code=401)
+    store.expire(settings.job_timeout_sec)
     job = store.get(job_id)
     if job is None:
         return HTMLResponse(ui.page_not_found(job_id), status_code=404)
-    return HTMLResponse(ui.page_job(settings, store, manager, job))
+    _job_response(job)
+    return HTMLResponse(ui.page_job(settings, store, manager, store.get(job_id)))
 
 
 @app.get("/ui/jobs/{job_id}/json", response_class=JSONResponse)
 def ui_job_json(job_id: str, request: Request) -> JSONResponse:
     if current_session(request) is None:
         raise HTTPException(status_code=401, detail="Требуется вход")
+    store.expire(settings.job_timeout_sec)
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
@@ -356,17 +332,20 @@ def ui_job_json(job_id: str, request: Request) -> JSONResponse:
 def ui_job_video(job_id: str, request: Request) -> Response:
     if current_session(request) is None:
         raise HTTPException(status_code=401, detail="Требуется вход")
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
     path = settings.uploads_dir / f"{job_id}.mov"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл недоступен")
-    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
-    return Response(content=path.read_bytes(), media_type="video/quicktime", headers=headers)
+    return FileResponse(path, media_type="video/quicktime", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.get("/ui/evidence/{job_id}/{name}")
 def ui_evidence(job_id: str, name: str, request: Request) -> Response:
     if current_session(request) is None:
         raise HTTPException(status_code=401, detail="Требуется вход")
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
     safe = Path(name).name
     path = settings.evidence_dir / job_id / safe
     if not path.is_file():
@@ -399,87 +378,3 @@ def _client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else ""
-
-
-def _validate_video(path: Path) -> Optional[str]:
-    """Fast pre-flight check so obviously bad files never take a queue slot."""
-
-    if shutil.which("ffprobe") is None:
-        return None
-    cmd = [
-        "ffprobe", "-v", "error", "-print_format", "json",
-        "-show_format", "-show_streams", str(path),
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=25, check=False)  # noqa: S603
-    except subprocess.TimeoutExpired:
-        return "ffprobe не смог прочитать файл за 25 с"
-    if proc.returncode != 0:
-        return "Файл не читается как видео"
-    try:
-        data = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
-    except json.JSONDecodeError:
-        return "ffprobe вернул некорректные данные"
-    streams = data.get("streams") or []
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
-    if video is None:
-        return "В файле нет видеодорожки"
-    try:
-        duration = float((data.get("format") or {}).get("duration") or video.get("duration") or 0.0)
-    except (TypeError, ValueError):
-        duration = 0.0
-    if duration <= 0:
-        return "Не удалось определить длительность видео"
-    if duration > settings.max_duration_sec:
-        return f"Длительность {duration:.0f} с превышает лимит {settings.max_duration_sec:.0f} с"
-    return None
-
-
-def _read_evidence(path: str) -> Optional[bytes]:
-    if not path:
-        return None
-    file_path = Path(path)
-    try:
-        resolved = file_path.resolve()
-        resolved.relative_to(settings.evidence_dir.resolve())
-    except (ValueError, OSError):
-        return None
-    if not resolved.is_file():
-        return None
-    data = resolved.read_bytes()
-    if not data.startswith(b"\xff\xd8"):
-        return None
-    return data
-
-
-def _update_size(job_id: str, size: int) -> None:
-    import hashlib
-
-    path = settings.uploads_dir / f"{job_id}.mov"
-    digest = ""
-    try:
-        h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        digest = h.hexdigest()
-    except OSError:
-        digest = ""
-    with store._connect() as conn:  # noqa: SLF001 - internal bookkeeping
-        conn.execute(
-            "UPDATE jobs SET size_bytes=?, sha256=? WHERE job_id=?",
-            (size, digest, job_id),
-        )
-
-
-class _connect_job_row:
-    """Small context manager kept for symmetry with the upload flow."""
-
-    def __init__(self, job_id: str):
-        self.job_id = job_id
-
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(self, *exc) -> bool:
-        return False

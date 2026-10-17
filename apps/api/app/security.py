@@ -49,7 +49,7 @@ def check_api_key(provided: Optional[str], accepted: list[str]) -> Optional[str]
     if not provided or not accepted:
         return None
     for index, key in enumerate(accepted):
-        if hmac.compare_digest(provided.strip(), key):
+        if hmac.compare_digest(provided.encode("utf-8"), key.encode("utf-8")):
             return f"key{index + 1}"
     return None
 

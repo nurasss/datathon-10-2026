@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import signal
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from dataclasses import replace
 
 from .config import Settings
 from .db import Job, JobStore
+from .results import done_response
 
 log = logging.getLogger("fortevision.worker")
 
@@ -30,6 +34,7 @@ class JobManager:
         self.store = store
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._watchdog: threading.Thread | None = None
         self._current: str | None = None
         self._lock = threading.Lock()
         self._last_purge = 0.0
@@ -42,9 +47,10 @@ class JobManager:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        requeued = self.store.requeue_stale(older_than_sec=self.settings.job_timeout_sec + 60)
-        if requeued:
-            log.warning("requeued %d stale job(s) after restart", requeued)
+        self.store.fail_interrupted()
+        self.store.expire(self.settings.job_timeout_sec)
+        self._watchdog = threading.Thread(target=self._watch_deadlines, name="fv-watchdog", daemon=True)
+        self._watchdog.start()
         self._thread = threading.Thread(target=self._loop, name="fv-worker", daemon=True)
         self._thread.start()
 
@@ -52,6 +58,16 @@ class JobManager:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5.0)
+        if self._watchdog:
+            self._watchdog.join(timeout=2.0)
+
+    def _watch_deadlines(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.store.expire(self.settings.job_timeout_sec)
+            except Exception:
+                log.exception("watchdog database error")
+            self._stop.wait(0.1)
 
     @property
     def current_job(self) -> str | None:
@@ -63,6 +79,7 @@ class JobManager:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                self.store.expire(self.settings.job_timeout_sec)
                 job = self.store.next_queued()
             except Exception as exc:  # noqa: BLE001 - DB hiccups must not kill the worker
                 self.last_error = f"{type(exc).__name__}: {exc}"
@@ -86,6 +103,9 @@ class JobManager:
     # -- one job ---------------------------------------------------------------------
 
     def _run_job(self, job: Job) -> None:
+        self.store.expire(self.settings.job_timeout_sec)
+        if self.store.get(job.job_id).status != "queued":
+            return
         with self._lock:
             self._current = job.job_id
         video_path = self.settings.uploads_dir / f"{job.job_id}.mov"
@@ -122,13 +142,11 @@ class JobManager:
                 stderr=subprocess.STDOUT,
                 cwd=str(self.settings.project_root / "apps" / "api"),
                 env=env,
+                start_new_session=True,
             )
         try:
             while True:
-                if proc.poll() is not None:
-                    break
-                if time.time() - started > self.settings.job_timeout_sec:
-                    self._terminate(proc)
+                if time.time() - job.created_at >= self.settings.job_timeout_sec:
                     self.store.fail(
                         job.job_id,
                         "JOB_TIMEOUT",
@@ -136,12 +154,17 @@ class JobManager:
                     )
                     log.warning("job %s timed out", job.job_id)
                     return
-                time.sleep(0.4)
+                if self._stop.is_set():
+                    self.store.fail(job.job_id, "WORKER_STOPPED", "сервер останавливается")
+                    return
+                if proc.poll() is not None:
+                    break
+                self._stop.wait(0.1)
         finally:
             if proc.poll() is None:
                 self._terminate(proc)
 
-        if not report_path.is_file():
+        if proc.returncode != 0 or not report_path.is_file():
             self.store.fail(
                 job.job_id,
                 "WORKER_CRASHED",
@@ -153,7 +176,16 @@ class JobManager:
         except json.JSONDecodeError:
             self.store.fail(job.job_id, "REPORT_UNREADABLE", "отчёт анализа повреждён")
             return
-        self.store.finish(job.job_id, payload)
+        if payload.get("ok"):
+            try:
+                candidate = replace(job, status="done", verdict=payload.get("verdict"),
+                                    events=payload["events"], duration_sec=payload["duration_sec"])
+                done_response(candidate, self.settings.evidence_dir)
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                self.store.fail(job.job_id, "INVALID_RESULT", str(exc)[:400])
+                return
+        self.store.expire(self.settings.job_timeout_sec)
+        self.store.finish(job.job_id, payload, self.settings.job_timeout_sec)
         log.info(
             "job %s finished: ok=%s verdict=%s in %.1fs",
             job.job_id,
@@ -176,11 +208,12 @@ class JobManager:
     @staticmethod
     def _terminate(proc: subprocess.Popen) -> None:
         try:
-            proc.terminate()
-            proc.wait(timeout=5)
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            proc.kill()
-        except Exception:  # noqa: BLE001
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=1)
+        except ProcessLookupError:
             pass
 
     @staticmethod

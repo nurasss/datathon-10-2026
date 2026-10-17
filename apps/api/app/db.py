@@ -81,8 +81,9 @@ class JobStore:
 
     # -- writes ----------------------------------------------------------------------
 
-    def create_job(self, filename: str, size_bytes: int, sha256: str, client_ip: str = "") -> str:
-        job_id = uuid.uuid4().hex[:12]
+    def create_job(self, filename: str, size_bytes: int, sha256: str, client_ip: str = "",
+                   job_id: str | None = None) -> str:
+        job_id = job_id or uuid.uuid4().hex[:12]
         now = time.time()
         with self._connect() as conn:
             conn.execute(
@@ -97,11 +98,11 @@ class JobStore:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE jobs SET status='processing', phase='starting', progress=0.02, "
-                "started_at=?, updated_at=? WHERE job_id=?",
+                "started_at=?, updated_at=? WHERE job_id=? AND status='queued'",
                 (now, now, job_id),
             )
 
-    def finish(self, job_id: str, payload: dict[str, Any]) -> None:
+    def finish(self, job_id: str, payload: dict[str, Any], timeout_sec: float = 280.0) -> None:
         now = time.time()
         status = "done" if payload.get("ok") else "failed"
         events = payload.get("events") or []
@@ -126,7 +127,8 @@ class JobStore:
             conn.execute(
                 "UPDATE jobs SET status=?, phase='finished', progress=1.0, verdict=?, events_json=?, "
                 "error_code=?, error_message=?, meta_json=?, updated_at=?, finished_at=?, "
-                "duration_sec=COALESCE(?, duration_sec) WHERE job_id=?",
+                "duration_sec=COALESCE(?, duration_sec) WHERE job_id=? "
+                "AND status='processing' AND created_at > ?",
                 (
                     status,
                     payload.get("verdict") if status == "done" else None,
@@ -138,6 +140,7 @@ class JobStore:
                     now,
                     payload.get("duration_sec"),
                     job_id,
+                    now - timeout_sec,
                 ),
             )
 
@@ -150,17 +153,26 @@ class JobStore:
                 (error_code, error_message, now, now, job_id),
             )
 
-    def requeue_stale(self, older_than_sec: float = 600.0) -> int:
-        """Return jobs stuck in ``processing`` (e.g. after a container restart)."""
-
-        cutoff = time.time() - older_than_sec
+    def expire(self, timeout_sec: float) -> int:
+        """Wall-clock budget includes time spent waiting in the queue."""
+        now = time.time()
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE jobs SET status='queued', phase='requeued' WHERE status='processing' "
-                "AND updated_at < ?",
-                (cutoff,),
+                "UPDATE jobs SET status='failed', phase='finished', error_code='JOB_TIMEOUT', "
+                "error_message='processing deadline exceeded', updated_at=?, finished_at=? "
+                "WHERE status IN ('queued','processing') AND created_at <= ?",
+                (now, now, now - timeout_sec),
             )
             return cur.rowcount or 0
+
+    def fail_interrupted(self) -> None:
+        """Do not extend deadlines or leave a crashed worker's jobs stuck after restart."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET status='failed', phase='finished', error_code='WORKER_CRASHED', "
+                "updated_at=?, finished_at=? WHERE status='processing'",
+                (time.time(), time.time()),
+            )
 
     def purge_older_than(self, hours: float) -> list[str]:
         """Drop finished jobs (and return their ids so files can be removed)."""
