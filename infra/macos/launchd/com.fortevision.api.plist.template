@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Шаблон. install.sh подставляет @...@ и кладёт результат в ~/Library/LaunchAgents/ -->
+    <key>Label</key>
+    <string>com.fortevision.api</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@FV_INFRA_ROOT@/infra/macos/run_api.sh</string>
+    </array>
+
+    <!-- Секретов здесь нет: только пути. Ключи живут в env-файле с правами 600. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FV_APP_ROOT</key><string>@FV_APP_ROOT@</string>
+        <key>FV_INFRA_ROOT</key><string>@FV_INFRA_ROOT@</string>
+        <key>FV_ENV_FILE</key><string>@FV_ENV_FILE@</string>
+    </dict>
+
+    <key>RunAtLoad</key><true/>
+    <!-- Перезапускать всегда: и после падения, и после чистого выхода. -->
+    <key>KeepAlive</key><true/>
+    <!-- Не чаще, чем раз в 10 с: защита от crash-loop при сломанном конфиге. -->
+    <key>ThrottleInterval</key><integer>10</integer>
+    <!-- Сколько ждать корректного завершения (SIGTERM) перед SIGKILL. -->
+    <key>ExitTimeOut</key><integer>20</integer>
+
+    <key>WorkingDirectory</key><string>@FV_APP_ROOT@</string>
+
+    <key>StandardOutPath</key><string>@FV_LOG_DIR@/api.out.log</string>
+    <key>StandardErrorPath</key><string>@FV_LOG_DIR@/api.err.log</string>
+</dict>
+</plist>
