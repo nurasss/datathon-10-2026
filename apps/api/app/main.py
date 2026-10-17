@@ -25,8 +25,17 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from . import ui
 from .config import Settings, load_settings
 from .db import Job, JobStore
-from .schemas import AnalyzeAccepted, HealthResponse, JobResponse, FailedJob, ProcessingJob
-from .results import done_response
+from .schemas import (
+    AnalyzeAccepted,
+    FailedJob,
+    FailedJobDetails,
+    HealthResponse,
+    JobDetailsResponse,
+    JobResponse,
+    ProcessingJob,
+    ProcessingJobDetails,
+)
+from .results import done_details_response, done_response
 from .security import SESSION_COOKIE, check_api_key, create_session, verify_session
 from .worker import JobManager
 from .middleware import UploadGuard
@@ -198,6 +207,32 @@ def get_job(job_id: str, _key: str = Depends(require_api_key)) -> JobResponse:
     return _job_response(job)
 
 
+@app.get("/api/v1/jobs/{job_id}/details", response_model=JobDetailsResponse)
+def get_job_details(job_id: str, _key: str = Depends(require_api_key)) -> JobDetailsResponse:
+    store.expire(settings.job_timeout_sec)
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    return _job_details_response(job)
+
+
+@app.get("/api/v1/jobs/{job_id}/video")
+def get_job_video(job_id: str, _key: str = Depends(require_api_key)) -> Response:
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    path = settings.uploads_dir / f"{job_id}.mov"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Файл недоступен")
+    return FileResponse(
+        path,
+        media_type="video/quicktime",
+        content_disposition_type="inline",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"},
+    )
+
+
+
 @app.get("/api/v1/rules")
 def rules() -> dict:
     registry = ui.load_registry()
@@ -235,6 +270,35 @@ def _job_response(job: Job) -> JobResponse:
             error=_safe_error(job),
         )
     return ProcessingJob(job_id=job.job_id, status="processing")
+
+
+def _job_details_response(job: Job) -> JobDetailsResponse:
+    if job.status == "done":
+        try:
+            registry = ui.load_registry()
+            return done_details_response(job, settings.evidence_dir, registry)
+        except (ValueError, KeyError, TypeError, OSError):
+            log.exception("job %s has invalid result/evidence", job.job_id)
+            store.fail(job.job_id, "INVALID_RESULT", "результат или evidence повреждены")
+            return FailedJobDetails(
+                job_id=job.job_id,
+                status="failed",
+                error="Некорректный результат анализа (INVALID_RESULT)",
+                video_duration_sec=job.duration_sec,
+            )
+    if job.status == "failed":
+        return FailedJobDetails(
+            job_id=job.job_id,
+            status="failed",
+            error=_safe_error(job),
+            video_duration_sec=job.duration_sec,
+        )
+    return ProcessingJobDetails(
+        job_id=job.job_id,
+        status="processing",
+        video_duration_sec=job.duration_sec,
+    )
+
 
 
 def _safe_error(job: Job) -> str:

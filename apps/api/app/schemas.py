@@ -79,3 +79,53 @@ class HealthResponse(BaseModel):
     queue_length: int
     worker_busy: bool
     uptime_sec: float
+
+
+class RuleDetails(ContractModel):
+    act_name: str
+    act_number: str
+    paragraph: str
+    quote: str
+    source_url: str
+
+
+class DetailedViolation(ContractModel):
+    type: str = Field(min_length=1)
+    timecode_sec: float = Field(ge=0)
+    description: str = Field(min_length=1)
+    evidence_frames: list[EvidenceFrame] = Field(min_length=1, max_length=3)
+    rule: RuleDetails
+
+
+class DoneJobDetails(ContractModel):
+    job_id: str
+    status: Literal["done"]
+    verdict: Literal["violation", "no_violation"]
+    violations: list[DetailedViolation]
+    video_duration_sec: float
+
+    @model_validator(mode="after")
+    def verdict_matches_events(self) -> DoneJobDetails:
+        if (self.verdict == "no_violation") != (len(self.violations) == 0):
+            raise ValueError("no_violation iff violations is empty")
+        return self
+
+
+class ProcessingJobDetails(ContractModel):
+    job_id: str
+    status: Literal["processing"]
+    video_duration_sec: float | None = None
+
+
+class FailedJobDetails(ContractModel):
+    job_id: str
+    status: Literal["failed"]
+    error: str | None = None
+    video_duration_sec: float | None = None
+
+
+JobDetailsResponse = Annotated[
+    DoneJobDetails | ProcessingJobDetails | FailedJobDetails,
+    Field(discriminator="status")
+]
+
