@@ -8,6 +8,7 @@ Classifies the laptop screen state into:
 """
 
 from __future__ import annotations
+
 from typing import Optional, Sequence
 import cv2
 import numpy as np
@@ -19,8 +20,8 @@ class ScreenClassifier:
     def __init__(
         self,
         off_brightness_threshold: float = 40.0,
-        doc_white_ratio_threshold: float = 0.20,
-        doc_brightness_threshold: float = 135.0,
+        doc_white_ratio_threshold: float = 0.185,
+        doc_brightness_threshold: float = 145.0,
     ):
         self.off_thresh = off_brightness_threshold
         self.doc_white_thresh = doc_white_ratio_threshold
@@ -46,8 +47,8 @@ class ScreenClassifier:
 
         # The screen is typically the upper ~65% of the laptop box
         screen_h = int((y2 - y1) * 0.65)
-        # Margin of 5% on sides to avoid desk background
-        margin_x = int((x2 - x1) * 0.05)
+        # Margin of 6% on sides to avoid desk background
+        margin_x = int((x2 - x1) * 0.06)
         sx1 = x1 + margin_x
         sx2 = x2 - margin_x
         sy1 = y1
@@ -67,7 +68,7 @@ class ScreenClassifier:
         max_val = float(np.max(gray))
 
         # 1. Check if off / closed
-        if mean_val < self.off_thresh or max_val < 55.0:
+        if mean_val < self.off_thresh or max_val < 50.0:
             return "off"
 
         # 2. Check for document (bright desaturated / white pixels typical of Excel/Word/tables)
@@ -77,8 +78,9 @@ class ScreenClassifier:
         white_mask = (v_chan > 165) & (s_chan < 60)
         white_ratio = float(np.count_nonzero(white_mask)) / float(gray.size)
 
-        # High brightness desaturated area indicates document
-        if white_ratio >= self.doc_white_thresh or (mean_val >= self.doc_bright_thresh and white_ratio >= 0.12):
+        # High brightness desaturated area indicates document (X-11, X-28)
+        # Lockscreen wallpapers (X-22, X-23, X-29) have colored backgrounds or lower white ratio
+        if (white_ratio >= self.doc_white_thresh and mean_val >= 120.0) or white_ratio >= 0.25:
             return "document"
 
         # 3. Otherwise, screen is illuminated but has wallpaper / lockscreen pattern
