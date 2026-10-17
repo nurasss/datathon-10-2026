@@ -202,6 +202,19 @@ class JobStore:
             ).fetchone()
         return self._to_job(row) if row else None
 
+    def claim_next_queued(self) -> Optional[Job]:
+        """Atomically transition the oldest queued job to processing."""
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                "UPDATE jobs SET status='processing', phase='starting', progress=0.02, "
+                "started_at=?, updated_at=? WHERE job_id = ("
+                "    SELECT job_id FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1"
+                ") RETURNING *",
+                (now, now),
+            ).fetchone()
+        return self._to_job(row) if row else None
+
     def queue_length(self) -> int:
         with self._connect() as conn:
             row = conn.execute(

@@ -33,9 +33,9 @@ class JobManager:
         self.settings = settings
         self.store = store
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
         self._watchdog: threading.Thread | None = None
-        self._current: str | None = None
+        self._active_jobs: set[str] = set()
         self._lock = threading.Lock()
         self._last_purge = 0.0
         self.total_processed = 0
@@ -44,20 +44,25 @@ class JobManager:
     # -- lifecycle -------------------------------------------------------------------
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._threads and any(t.is_alive() for t in self._threads):
             return
         self._stop.clear()
         self.store.fail_interrupted()
         self.store.expire(self.settings.job_timeout_sec)
         self._watchdog = threading.Thread(target=self._watch_deadlines, name="fv-watchdog", daemon=True)
         self._watchdog.start()
-        self._thread = threading.Thread(target=self._loop, name="fv-worker", daemon=True)
-        self._thread.start()
+        concurrency = getattr(self.settings, "worker_concurrency", 1)
+        self._threads = []
+        for i in range(concurrency):
+            t = threading.Thread(target=self._loop, name=f"fv-worker-{i}", daemon=True)
+            t.start()
+            self._threads.append(t)
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5.0)
+        for t in self._threads:
+            t.join(timeout=5.0)
+        self._threads.clear()
         if self._watchdog:
             self._watchdog.join(timeout=2.0)
 
@@ -72,7 +77,7 @@ class JobManager:
     @property
     def current_job(self) -> str | None:
         with self._lock:
-            return self._current
+            return next(iter(self._active_jobs)) if self._active_jobs else None
 
     # -- main loop -------------------------------------------------------------------
 
@@ -80,7 +85,7 @@ class JobManager:
         while not self._stop.is_set():
             try:
                 self.store.expire(self.settings.job_timeout_sec)
-                job = self.store.next_queued()
+                job = self.store.claim_next_queued()
             except Exception as exc:  # noqa: BLE001 - DB hiccups must not kill the worker
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 log.exception("queue poll failed")
@@ -90,6 +95,8 @@ class JobManager:
                 self._stop.wait(self.settings.worker_poll_sec)
                 continue
             try:
+                with self._lock:
+                    self._active_jobs.add(job.job_id)
                 self._run_job(job)
             except Exception as exc:  # noqa: BLE001
                 self.last_error = f"{type(exc).__name__}: {exc}"
@@ -97,22 +104,17 @@ class JobManager:
                 self.store.fail(job.job_id, "WORKER_ERROR", f"{type(exc).__name__}: {exc}")
             finally:
                 with self._lock:
-                    self._current = None
+                    self._active_jobs.discard(job.job_id)
                 self.total_processed += 1
 
     # -- one job ---------------------------------------------------------------------
 
     def _run_job(self, job: Job) -> None:
         self.store.expire(self.settings.job_timeout_sec)
-        if self.store.get(job.job_id).status != "queued":
-            return
-        with self._lock:
-            self._current = job.job_id
         video_path = self.settings.uploads_dir / f"{job.job_id}.mov"
         if not video_path.is_file():
             self.store.fail(job.job_id, "UPLOAD_MISSING", "загруженный файл не найден")
             return
-        self.store.mark_processing(job.job_id)
         report_path = self.settings.reports_dir / f"{job.job_id}.json"
         if report_path.exists():
             report_path.unlink()

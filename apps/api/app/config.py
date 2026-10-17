@@ -60,8 +60,9 @@ class Settings:
     retention_hours: float = _float("FV_RETENTION_HOURS", 72.0)
     public_base_url: str = os.environ.get("FV_PUBLIC_BASE_URL", "")
     service_name: str = os.environ.get("FV_SERVICE_NAME", "ForteVision")
-    #: in-process worker (single job at a time — matches the 2 vCPU target box)
+    #: in-process worker (single job at a time by default — matches the 2 vCPU target box)
     worker_enabled: bool = _bool("FV_WORKER_ENABLED", True)
+    worker_concurrency: int = max(1, min(8, _int("FV_WORKER_CONCURRENCY", 1)))
     worker_poll_sec: float = _float("FV_WORKER_POLL_SEC", 1.0)
 
     @property
