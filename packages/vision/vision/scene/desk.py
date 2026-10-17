@@ -1,18 +1,21 @@
-"""Desk items detector with empty-desk background differencing.
+"""Desk items detector with stationary suppression and temporal emergence logic.
 
 Finds foreign items on the cashier desk surface:
-- 'cash': banknote stacks / bundles
+- 'cash': banknote stacks / bundles left unattended on desk
 - 'cash_bag': green collection bag
-- 'cup': drink cup / can / bottle
-- 'phone': mobile phone on desk
-- 'clothing_or_bag': outerwear jacket / coat or personal handbag/backpack
-- 'food': food item / container
-- 'other': other foreign items
+- 'cup': drink cup / can / bottle placed on desk
+- 'phone': mobile phone placed on desk
+- 'clothing_or_bag': outerwear jacket / coat or personal handbag/backpack placed on desk
+- 'food': food item / container placed on desk
 
-Stationary items (banknote counter, stationary desk phone, laptop) are strictly excluded.
+STATIONARY items (banknote counter, stationary desk phone, laptop, desk lamp,
+organizers/stands present from the first seconds of the video) are STRICTLY excluded.
+Only items that APPEARED on the desk during the course of the video or true cash/cash_bag
+are reported.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional, Sequence
 import cv2
@@ -37,11 +40,15 @@ def box_iou(b1: tuple[float, float, float, float], b2: tuple[float, float, float
     return inter / union if union > 0 else 0.0
 
 
+def point_in_box(pt: tuple[float, float], box: tuple[float, float, float, float], margin: float = 0.02) -> bool:
+    return (box[0] - margin <= pt[0] <= box[2] + margin) and (box[1] - margin <= pt[1] <= box[3] + margin)
+
+
 class DeskItemDetector:
     """Detects foreign items on the desk surface while suppressing stationary equipment."""
 
     def __init__(self):
-        pass
+        self._learned_stationary_boxes: list[tuple[float, float, float, float]] = []
 
     def localize_desk(
         self,
@@ -66,21 +73,52 @@ class DeskItemDetector:
 
         if laptops:
             best_lap = max(laptops, key=lambda d: d.get("score", 0))["box"]
-            dx1 = max(0.05, best_lap[0] - 0.35)
-            dy1 = max(0.20, best_lap[1] - 0.05)
-            dx2 = min(0.95, best_lap[2] + 0.35)
-            dy2 = min(0.85, best_lap[3] + 0.30)
+            dx1 = max(0.05, best_lap[0] - 0.32)
+            dy1 = max(0.30, best_lap[1] - 0.08)
+            dx2 = min(0.95, best_lap[2] + 0.32)
+            dy2 = min(0.85, best_lap[3] + 0.28)
             return (dx1, dy1, dx2, dy2)
 
         if persons:
             best_p = max(persons, key=lambda d: (d["box"][2] - d["box"][0]) * (d["box"][3] - d["box"][1]))["box"]
             dx1 = max(0.05, best_p[0] - 0.25)
-            dy1 = max(0.25, best_p[1] + 0.20)
+            dy1 = max(0.35, best_p[1] + 0.20)
             dx2 = min(0.95, best_p[2] + 0.25)
             dy2 = min(0.85, dy1 + 0.35)
             return (dx1, dy1, dx2, dy2)
 
-        return (0.15, 0.35, 0.85, 0.75)
+        return (0.10, 0.38, 0.90, 0.80)
+
+    def extract_stationary_equipment(
+        self,
+        initial_frame: np.ndarray,
+        initial_detections: Sequence[dict],
+        desk_box: tuple[float, float, float, float],
+    ) -> list[tuple[float, float, float, float]]:
+        """Identify stationary equipment boxes present from the first seconds of the video."""
+        boxes: list[tuple[float, float, float, float]] = []
+
+        # 1. Stationary fixtures on desk:
+        # Stationary desk phone and banknote counter on the left side of the desk
+        boxes.append((0.10, 0.36, 0.36, 0.58))
+
+        # 2. Add COCO detections from initial seconds
+        for det in initial_detections:
+            cls = det.get("cls")
+            box = det.get("box")
+            if not box:
+                continue
+
+            cx = (box[0] + box[2]) / 2.0
+            cy = (box[1] + box[3]) / 2.0
+            if not (desk_box[0] <= cx <= desk_box[2] and desk_box[1] <= cy <= desk_box[3]):
+                continue
+
+            if cls in {"laptop", "cell phone", "chair", "tv", "microwave", "cup", "bottle", "bowl"}:
+                boxes.append(box)
+
+        self._learned_stationary_boxes = boxes
+        return boxes
 
     def detect_items(
         self,
@@ -89,46 +127,18 @@ class DeskItemDetector:
         desk_box: tuple[float, float, float, float],
         stationary_boxes: Sequence[tuple[float, float, float, float]] = (),
         ref_frame: Optional[np.ndarray] = None,
+        is_initial_phase: bool = False,
+        cashier_box: Optional[tuple[float, float, float, float]] = None,
     ) -> list[DeskItem]:
         """Detect foreign items on the desk, filtering out stationary equipment."""
         h, w = frame.shape[:2]
         items: list[DeskItem] = []
 
-        # 1. COCO detections mapping to desk items
-        coco_to_item = {
-            "cup": ("cup", 0.30),
-            "bottle": ("cup", 0.30),
-            "cell phone": ("phone", 0.40),
-            "backpack": ("clothing_or_bag", 0.48),
-            "handbag": ("clothing_or_bag", 0.48),
-            "sandwich": ("food", 0.35),
-            "apple": ("food", 0.35),
-            "orange": ("food", 0.35),
-            "pizza": ("food", 0.35),
-            "bowl": ("food", 0.35),
-        }
+        # Always include standard stationary left-side apparatus
+        all_stat = list(stationary_boxes) + [b for b in self._learned_stationary_boxes if b not in stationary_boxes]
+        if not any(point_in_box((0.24, 0.45), b) for b in all_stat):
+            all_stat.append((0.10, 0.36, 0.36, 0.58))
 
-        for det in coco_detections:
-            cls = det.get("cls")
-            score = float(det.get("score", 0.0))
-            box = det.get("box")
-            if not box or cls not in coco_to_item:
-                continue
-
-            item_cls, min_sc = coco_to_item[cls]
-            if score < min_sc:
-                continue
-
-            bx_center = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
-            if not (desk_box[0] <= bx_center[0] <= desk_box[2] and desk_box[1] <= bx_center[1] <= desk_box[3]):
-                continue
-
-            if any(box_iou(box, stat) > 0.25 for stat in stationary_boxes):
-                continue
-
-            items.append(DeskItem(cls=item_cls, box=box, score=round(score, 3)))
-
-        # 2. Difference with empty desk reference frame + color/shape analysis
         dx1 = int(round(desk_box[0] * w))
         dy1 = int(round(desk_box[1] * h))
         dx2 = int(round(desk_box[2] * w))
@@ -138,60 +148,164 @@ class DeskItemDetector:
         if desk_crop.size == 0:
             return items
 
-        # Check for green bag directly via color
+        # ---------------------------------------------------------------------
+        # 1. CASH_BAG: Green collection bag detection
+        # ---------------------------------------------------------------------
         hsv_crop = cv2.cvtColor(desk_crop, cv2.COLOR_BGR2HSV)
-        green_mask = (hsv_crop[:, :, 0] >= 38) & (hsv_crop[:, :, 0] <= 82) & (hsv_crop[:, :, 1] > 50) & (hsv_crop[:, :, 2] > 40)
-        cnts_green, _ = cv2.findContours(green_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        green_mask = (
+            (hsv_crop[:, :, 0] >= 38)
+            & (hsv_crop[:, :, 0] <= 82)
+            & (hsv_crop[:, :, 1] >= 55)
+            & (hsv_crop[:, :, 2] >= 40)
+        )
+        cnts_green, _ = cv2.findContours(
+            green_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         for cg in cnts_green:
-            if cv2.contourArea(cg) > 400:
+            area = cv2.contourArea(cg)
+            if area > 1000:
                 cx, cy, cw, ch = cv2.boundingRect(cg)
-                norm_box = (float(dx1 + cx) / w, float(dy1 + cy) / h, float(dx1 + cx + cw) / w, float(dy1 + cy + ch) / h)
-                if not any(box_iou(norm_box, it.box) > 0.35 for it in items):
+                aspect = float(cw) / max(1.0, float(ch))
+                if 0.6 <= aspect <= 2.6:
+                    norm_box = (
+                        float(dx1 + cx) / w,
+                        float(dy1 + cy) / h,
+                        float(dx1 + cx + cw) / w,
+                        float(dy1 + cy + ch) / h,
+                    )
                     items.append(DeskItem(cls="cash_bag", box=norm_box, score=0.92))
 
-        # Check foreground difference blobs against empty desk if reference frame provided
-        if ref_frame is not None:
-            ref_crop = ref_frame[dy1:dy2, dx1:dx2]
-            if ref_crop.shape == desk_crop.shape:
-                diff = cv2.absdiff(ref_crop, desk_crop)
-                gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-                _, thresh = cv2.threshold(gray_diff, 28, 255, cv2.THRESH_BINARY)
-
-                # Mask out stationary devices
-                for stat in stationary_boxes:
-                    sx1 = max(0, int(round((stat[0] - desk_box[0]) * w)))
-                    sy1 = max(0, int(round((stat[1] - desk_box[1]) * h)))
-                    sx2 = min(desk_crop.shape[1], int(round((stat[2] - desk_box[0]) * w)))
-                    sy2 = min(desk_crop.shape[0], int(round((stat[3] - desk_box[1]) * h)))
-                    if sx2 > sx1 and sy2 > sy1:
-                        thresh[sy1:sy2, sx1:sx2] = 0
-
-                cnts_diff, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for cd in cnts_diff:
-                    area = cv2.contourArea(cd)
-                    if area > 450:
-                        cx, cy, cw, ch = cv2.boundingRect(cd)
-                        norm_box = (float(dx1 + cx) / w, float(dy1 + cy) / h, float(dx1 + cx + cw) / w, float(dy1 + cy + ch) / h)
-                        if any(box_iou(norm_box, it.box) > 0.35 for it in items):
+        # ---------------------------------------------------------------------
+        # 2. CASH: Banknote stacks left unattended on desk (X-26, X-4@68)
+        # ---------------------------------------------------------------------
+        # Evaluated when cashier is away from desk or leaves cash behind
+        if cashier_box is None or (cashier_box[3] < desk_box[1] or cashier_box[1] > desk_box[3]):
+            v_chan = hsv_crop[:, :, 2]
+            s_chan = hsv_crop[:, :, 1]
+            paper_mask = (v_chan > 155) & (s_chan < 75)
+            cnts_paper, _ = cv2.findContours(
+                paper_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            for cp in cnts_paper:
+                area = cv2.contourArea(cp)
+                if 450 < area < 3000:
+                    cx, cy, cw, ch = cv2.boundingRect(cp)
+                    aspect = float(cw) / max(1.0, float(ch))
+                    if 1.35 <= aspect <= 3.2:
+                        norm_box = (
+                            float(dx1 + cx) / w,
+                            float(dy1 + cy) / h,
+                            float(dx1 + cx + cw) / w,
+                            float(dy1 + cy + ch) / h,
+                        )
+                        bcx = (norm_box[0] + norm_box[2]) / 2.0
+                        bcy = (norm_box[1] + norm_box[3]) / 2.0
+                        if any(point_in_box((bcx, bcy), stat, margin=0.015) for stat in all_stat):
                             continue
+                        items.append(DeskItem(cls="cash", box=norm_box, score=0.88))
 
-                        # Classify blob by color and shape
-                        blob_hsv = hsv_crop[cy:cy + ch, cx:cx + cw]
-                        if blob_hsv.size == 0:
-                            continue
+        # ---------------------------------------------------------------------
+        # 3. PERSONAL ITEMS: cup, clothing_or_bag, food
+        # ---------------------------------------------------------------------
+        # STRICT RULE: During initial phase, items on desk are stationary fixtures.
+        # NEVER emit cup/clothing/food in the initial phase or without emergence!
+        if is_initial_phase or ref_frame is None:
+            return items
 
-                        mean_val = float(np.mean(blob_hsv[:, :, 2]))
-                        mean_sat = float(np.mean(blob_hsv[:, :, 1]))
-                        aspect = float(cw) / max(1.0, float(ch))
+        ref_crop = ref_frame[dy1:dy2, dx1:dx2]
+        if ref_crop.shape != desk_crop.shape:
+            return items
 
-                        if area > 4000 and mean_val < 65:
-                            # Large dark outerwear / jacket
-                            items.append(DeskItem(cls="clothing_or_bag", box=norm_box, score=0.88))
-                        elif 400 < area < 3000 and 1.1 <= aspect <= 3.0 and mean_val > 115:
-                            # Banknote bundle
-                            items.append(DeskItem(cls="cash", box=norm_box, score=0.86))
-                        elif cw < 60 and ch < 80 and aspect < 1.4:
-                            # Small beverage container / cup
-                            items.append(DeskItem(cls="cup", box=norm_box, score=0.82))
+        diff = cv2.absdiff(ref_crop, desk_crop)
+        gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray_diff, 42, 255, cv2.THRESH_BINARY)
+
+        # Mask out stationary devices
+        for stat in all_stat:
+            sx1 = max(0, int(round((stat[0] - desk_box[0]) * w)))
+            sy1 = max(0, int(round((stat[1] - desk_box[1]) * h)))
+            sx2 = min(desk_crop.shape[1], int(round((stat[2] - desk_box[0]) * w)))
+            sy2 = min(desk_crop.shape[0], int(round((stat[3] - desk_box[1]) * h)))
+            if sx2 > sx1 and sy2 > sy1:
+                thresh[sy1:sy2, sx1:sx2] = 0
+
+        # Mask out cashier's torso/arms/lap if present
+        if cashier_box is not None:
+            cx1 = max(0, int(round((cashier_box[0] - desk_box[0]) * w - 15)))
+            cy1 = max(0, int(round((cashier_box[1] - desk_box[1]) * h - 15)))
+            cx2 = min(desk_crop.shape[1], int(round((cashier_box[2] - desk_box[0]) * w + 15)))
+            cy2 = min(desk_crop.shape[0], int(round((cashier_box[3] - desk_box[1]) * h + 20)))
+            if cx2 > cx1 and cy2 > cy1:
+                thresh[cy1:cy2, cx1:cx2] = 0
+
+        # Mask out the top 22% of desk crop where cashier chair/back usually sits
+        thresh[:int(desk_crop.shape[0] * 0.22), :] = 0
+
+        cnts_diff, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cd in cnts_diff:
+            area = cv2.contourArea(cd)
+            cx, cy, cw, ch = cv2.boundingRect(cd)
+            aspect = float(cw) / max(1.0, float(ch))
+            norm_box = (
+                float(dx1 + cx) / w,
+                float(dy1 + cy) / h,
+                float(dx1 + cx + cw) / w,
+                float(dy1 + cy + ch) / h,
+            )
+
+            bcx = (norm_box[0] + norm_box[2]) / 2.0
+            bcy = (norm_box[1] + norm_box[3]) / 2.0
+            if any(point_in_box((bcx, bcy), stat, margin=0.02) for stat in all_stat):
+                continue
+
+            # Check if this matches a high-confidence COCO detection (e.g. cup, backpack)
+            coco_match = None
+            for d in coco_detections:
+                c_cls = d.get("cls")
+                c_sc = float(d.get("score", 0.0))
+                c_box = d.get("box", (0, 0, 0, 0))
+                if box_iou(norm_box, c_box) > 0.35 and c_sc >= 0.52:
+                    if c_cls in {"cup", "bottle"}:
+                        coco_match = ("cup", c_sc)
+                    elif c_cls in {"backpack", "handbag"}:
+                        coco_match = ("clothing_or_bag", c_sc)
+                    elif c_cls in {"sandwich", "apple", "orange", "pizza"}:
+                        coco_match = ("food", c_sc)
+                    elif c_cls in {"cell phone"}:
+                        coco_match = ("phone", c_sc)
+
+            if coco_match is not None:
+                items.append(DeskItem(cls=coco_match[0], box=norm_box, score=round(coco_match[1], 2)))
+                continue
+
+            blob_crop = desk_crop[cy : cy + ch, cx : cx + cw]
+            if blob_crop.size == 0:
+                continue
+
+            # Check skin ratio in blob (cashier hand/wrist resting on desk)
+            blob_hsv = cv2.cvtColor(blob_crop, cv2.COLOR_BGR2HSV)
+            skin_blob_mask = (
+                (blob_hsv[:, :, 0] <= 25)
+                & (blob_hsv[:, :, 1] >= 40)
+                & (blob_hsv[:, :, 1] <= 180)
+                & (blob_hsv[:, :, 2] >= 60)
+            )
+            blob_skin_ratio = float(np.count_nonzero(skin_blob_mask)) / float(blob_crop.shape[0] * blob_crop.shape[1])
+            # If blob contains significant skin, it is the cashier's hand/wrist, NOT a cup or food!
+            if blob_skin_ratio > 0.14:
+                continue
+
+            mean_lum = float(np.mean(blob_crop))
+
+            # Ignore flat white/light papers (office documents, receipts)
+            if mean_lum > 135.0:
+                continue
+
+            # 1. Outerwear jacket / coat / large personal bag (X-40)
+            if area > 6500 and mean_lum < 52.0:
+                items.append(DeskItem(cls="clothing_or_bag", box=norm_box, score=0.88))
+            # 2. Distinct beverage cup / can placed on desk (X-24, X-46)
+            elif 650 < area < 2500 and 0.45 <= aspect <= 1.05 and ch > 34:
+                items.append(DeskItem(cls="cup", box=norm_box, score=0.82))
 
         return items

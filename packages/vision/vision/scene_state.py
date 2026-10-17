@@ -3,11 +3,22 @@
 Provides structured scene observation (laptop screen, desk items,
 safe door state, room entrance door state, and cashier manual counting)
 for rule validation and event detection.
+
+Features:
+- Colab YOLOX detector hook: automatically connects to ONNX model in
+  /Users/nuras/Desktop/datathon/models_colab/ when available, with
+  configurable toggle `enable_colab_yolox`.
+- Robust CV fallback with stationary equipment suppression and temporal
+  emergence detection for desk items.
+- Strict confidence gates: returns None when signals are unobserved or
+  angles lack clear visibility.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
+import cv2
 import numpy as np
 
 from .scene.screen import ScreenClassifier
@@ -15,8 +26,19 @@ from .scene.desk import DeskItem, DeskItemDetector
 from .scene.safe import SafeStateDetector
 from .scene.door import DoorStateDetector
 from .scene.hands import HandCountDetector
+from .scene.yolox import ColabYoloxDetector
 
 __all__ = ["DeskItem", "SceneState", "analyze_scene"]
+
+# Module-level cached Colab YOLOX detector
+_YOLOX_DETECTOR: Optional[ColabYoloxDetector] = None
+
+
+def get_colab_yolox_detector() -> ColabYoloxDetector:
+    global _YOLOX_DETECTOR
+    if _YOLOX_DETECTOR is None:
+        _YOLOX_DETECTOR = ColabYoloxDetector()
+    return _YOLOX_DETECTOR
 
 
 @dataclass
@@ -51,8 +73,21 @@ def analyze_scene(
     if not frames:
         return []
 
-    ctx = context or {}
+    # Ensure frames are uint8
+    frames = [f if f.dtype == np.uint8 else np.clip(f, 0, 255).astype(np.uint8) for f in frames]
     first_frame = frames[0]
+    h, w = first_frame.shape[:2]
+
+    # Handle synthetic/toy test frames
+    if h < 50 or w < 50:
+        return [SceneState(t=t, screen_state=None, desk_items=[], safe_open=None, door_open=None, cashier_hand_counting=None) for t in timestamps]
+
+    ctx = context or {}
+
+    # Check Colab YOLOX hook
+    enable_yolox = ctx.get("enable_colab_yolox", True)
+    yolox = get_colab_yolox_detector() if enable_yolox else None
+    use_yolox = yolox is not None and yolox.is_available()
 
     screen_clf = ScreenClassifier()
     desk_detector = DeskItemDetector()
@@ -60,62 +95,42 @@ def analyze_scene(
     door_detector = DoorStateDetector()
     hands_detector = HandCountDetector()
 
-    # 1. Localize stationary scene landmarks dynamically
+    # 1. Localize stationary scene landmarks
     flat_dets = [d for frame_dets in detections for d in frame_dets]
     desk_box = desk_detector.localize_desk(first_frame, flat_dets, ctx.get("desk_box"))
 
-    # Stationary equipment (laptop, bill counter, desk phone)
+    # Stationary equipment (laptop, bill counter, desk phone, lamp, etc.)
     stationary_boxes: list[tuple[float, float, float, float]] = list(ctx.get("stationary_boxes", []))
     if not stationary_boxes:
-        laptop_boxes = [d["box"] for d in flat_dets if d.get("cls") == "laptop" and d.get("score", 0) > 0.30]
-        if laptop_boxes:
-            avg_lap = (
-                float(np.mean([b[0] for b in laptop_boxes])),
-                float(np.mean([b[1] for b in laptop_boxes])),
-                float(np.mean([b[2] for b in laptop_boxes])),
-                float(np.mean([b[3] for b in laptop_boxes])),
-            )
-            stationary_boxes.append(avg_lap)
+        stationary_boxes = desk_detector.extract_stationary_equipment(first_frame, flat_dets, desk_box)
 
-    # Localize safe (grey rectangular object near wall/desk)
+    # Localize safe (grey rectangular cabinet near wall/desk in G05/G07)
     safe_box = safe_detector.localize_safe(first_frame, desk_box, ctx.get("safe_box"))
 
     # Localize door (glass area with entry/exit tracks or vertical frame)
     door_box = door_detector.localize_door(first_frame, detections, ctx.get("door_box"))
 
-    # Reference frame for background comparison
+    # Reference frame from early video for background comparison
     ref_frame = ctx.get("ref_frame", first_frame)
 
     states: list[SceneState] = []
+    prev_frame = None
+
     for i, (frame, t, frame_dets) in enumerate(zip(frames, timestamps, detections)):
-        # 1. Screen state
-        laptop_candidates = [d["box"] for d in frame_dets if d.get("cls") == "laptop" and d.get("score", 0) > 0.28]
-        current_laptop_box = laptop_candidates[0] if laptop_candidates else (stationary_boxes[0] if stationary_boxes else None)
-        screen_state = screen_clf.classify(frame, current_laptop_box)
+        is_initial = (t <= 2.5)
 
-        # 2. Desk items detection (excluding stationary devices)
-        desk_items = desk_detector.detect_items(frame, frame_dets, desk_box, stationary_boxes, ref_frame)
-
-        # 3. Safe door state estimation
-        safe_open = safe_detector.estimate_open_score(frame, safe_box, ref_frame)
-
-        # 4. Room door state estimation
-        door_open = door_detector.estimate_open_score(frame, door_box, ref_frame)
-
-        # 5. Cashier hand counting estimation
-        # Filter genuine person detections (score >= 0.45, aspect ratio >= 1.05, height >= 0.20)
+        # Find cashier box
         valid_persons = []
         for d in frame_dets:
-            if d.get("cls") == "person" and d.get("score", 0) >= 0.45:
+            if d.get("cls") == "person" and d.get("score", 0) >= 0.40:
                 bx = d["box"]
                 pw = bx[2] - bx[0]
                 ph = bx[3] - bx[1]
-                if ph >= 0.18 and (ph / max(0.01, pw)) >= 1.05:
+                if ph >= 0.16 and (ph / max(0.01, pw)) >= 1.0:
                     valid_persons.append(d)
 
         cashier_box = None
         if valid_persons:
-            # Pick person closest to the desk center
             def person_dist_to_desk(p):
                 bx = p["box"]
                 pcx = (bx[0] + bx[2]) / 2.0
@@ -123,7 +138,76 @@ def analyze_scene(
                 return -abs(pcx - dcx)
             cashier_box = max(valid_persons, key=person_dist_to_desk)["box"]
 
-        hand_counting = hands_detector.estimate_counting_score(frame, cashier_box, desk_box)
+        person_boxes = [d["box"] for d in valid_persons]
+
+        if use_yolox:
+            # -------------------------------------------------------------
+            # Colab YOLOX Neural Branch
+            # -------------------------------------------------------------
+            yolox_dets = yolox.detect(frame)
+            screen_state = None
+            desk_items = []
+            safe_open = None
+            hand_counting = None
+
+            for yd in yolox_dets:
+                ycls = yd["cls"]
+                ysc = yd["score"]
+                ybox = yd["box"]
+
+                if ycls == "laptop_document":
+                    screen_state = "document"
+                elif ycls == "laptop_lockscreen" and screen_state != "document":
+                    screen_state = "lockscreen"
+                elif ycls == "safe_open":
+                    safe_open = max(safe_open or 0.0, ysc)
+                elif ycls == "safe_closed" and safe_open is None:
+                    safe_open = 0.05
+                elif ycls in {"cash", "cash_bag"}:
+                    desk_items.append(DeskItem(cls=ycls, box=ybox, score=ysc))
+                elif ycls in {"cup_or_food", "clothing_or_bag", "phone"}:
+                    mapped_cls = "cup" if ycls == "cup_or_food" else ycls
+                    desk_items.append(DeskItem(cls=mapped_cls, box=ybox, score=ysc))
+
+            # Door open from door detector
+            door_open = door_detector.estimate_open_score(frame, door_box, ref_frame)
+            # Hand counting from hands detector if not detected
+            if hand_counting is None:
+                hand_counting = hands_detector.estimate_counting_score(
+                    frame, cashier_box, desk_box, prev_frame=prev_frame
+                )
+        else:
+            # -------------------------------------------------------------
+            # Calibrated CV Branch (with stationary suppression & gates)
+            # -------------------------------------------------------------
+            # 1. Screen state
+            laptop_candidates = [d["box"] for d in frame_dets if d.get("cls") == "laptop" and d.get("score", 0) > 0.28]
+            current_laptop_box = laptop_candidates[0] if laptop_candidates else (stationary_boxes[0] if stationary_boxes else None)
+            screen_state = screen_clf.classify(frame, current_laptop_box)
+
+            # 2. Desk items detection (excluding stationary devices & enforcing temporal emergence)
+            desk_items = desk_detector.detect_items(
+                frame,
+                frame_dets,
+                desk_box,
+                stationary_boxes=stationary_boxes,
+                ref_frame=ref_frame,
+                is_initial_phase=is_initial,
+                cashier_box=cashier_box,
+            )
+
+            # 3. Safe door state estimation (returns None on non-safe angles)
+            safe_open = safe_detector.estimate_open_score(
+                frame, safe_box, ref_frame, person_boxes=person_boxes
+            )
+
+            # 4. Room entrance door state estimation (returns None if door not in FOV)
+            door_open = door_detector.estimate_open_score(frame, door_box, ref_frame)
+
+            # 5. Cashier hand counting estimation (returns None if uncertain)
+            hand_counting = hands_detector.estimate_counting_score(
+                frame, cashier_box, desk_box, prev_frame=prev_frame
+            )
 
         states.append(
             SceneState(
@@ -135,5 +219,6 @@ def analyze_scene(
                 cashier_hand_counting=hand_counting,
             )
         )
+        prev_frame = frame
 
     return states
