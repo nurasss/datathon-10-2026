@@ -3,7 +3,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { parseResult, validJobId } from "./contracts";
 
-type Session = { key: string; expires: number; jobs: Map<string, number> };
+type Session = {
+  key: string;
+  expires: number;
+  jobs: Map<string, { started: number; filename: string | null }>;
+};
 const state = globalThis as typeof globalThis & {
   fvSessions?: Map<string, Session>;
 };
@@ -87,6 +91,13 @@ export async function handle(request: NextRequest, parts: string[]) {
     const method = request.method;
     if (["POST", "DELETE"].includes(method) && !sameOrigin(request))
       return error(403, "Запрос должен быть отправлен с этого сайта.");
+    if (parts.join("/") === "config" && method === "GET") {
+      return json({
+        allowed_extensions: [".mov"],
+        max_upload_bytes: settings().max,
+        deadline_sec: 300,
+      });
+    }
     if (parts.join("/") === "session") {
       if (method === "GET") {
         let config;
@@ -184,6 +195,21 @@ export async function handle(request: NextRequest, parts: string[]) {
       )
         return error(415, "Ожидается загрузка файла.");
       const started = Date.now();
+      let filename: string | null = null;
+      try {
+        const raw = decodeURIComponent(
+          request.headers.get("x-fv-filename") ?? "",
+        );
+        filename =
+          raw
+            .replaceAll("\\", "/")
+            .split("/")
+            .pop()
+            ?.replace(/[\x00-\x1f\x7f]/g, "")
+            .slice(0, 255) || null;
+      } catch {
+        return error(400, "Некорректное имя файла.");
+      }
       const limit = settings().max + 64 * 1024; // backend multipart framing allowance
       if (Number(request.headers.get("content-length") ?? 0) > limit)
         return error(413, "Файл превышает допустимый размер.");
@@ -230,7 +256,7 @@ export async function handle(request: NextRequest, parts: string[]) {
         return error(502, "Сервис не вернул корректный идентификатор задачи.");
       if (auth.jobs.size >= 100)
         auth.jobs.delete(auth.jobs.keys().next().value!);
-      auth.jobs.set(data.job_id, started);
+      auth.jobs.set(data.job_id, { started, filename });
       return json({ job_id: data.job_id, started_at: started }, 202);
     }
     if (
@@ -282,9 +308,55 @@ export async function handle(request: NextRequest, parts: string[]) {
         return upstreamError(response.status);
       }
       try {
+        const result = parseResult(await response.json(), id);
+        const details = result.status === "done" ? result.violations : [];
+        const job =
+          result.status === "done"
+            ? {
+                job_id: id,
+                status: result.status,
+                verdict: result.verdict,
+                violations: details.map(
+                  ({ type, timecode_sec, description, evidence_frames }) => ({
+                    type,
+                    timecode_sec,
+                    description,
+                    evidence_frames,
+                  }),
+                ),
+              }
+            : { job_id: id, status: result.status };
         return json({
-          job: parseResult(await response.json(), id),
-          started_at: auth.jobs.get(id),
+          job,
+          meta: {
+            filename: auth.jobs.get(id)?.filename ?? null,
+            duration_sec: result.video_duration_sec ?? null,
+            stage: result.status === "done" ? "finished" : null,
+            progress: null,
+            video_url:
+              result.status === "done"
+                ? `/ui/api/jobs/${encodeURIComponent(id)}/video`
+                : null,
+            event_details: details.map((event, violation_index) => ({
+              violation_index,
+              observation: null,
+              rule_reference: event.rule
+                ? {
+                    title: [event.rule.act_name, event.rule.act_number]
+                      .filter(Boolean)
+                      .join(" "),
+                    paragraph: event.rule.paragraph || null,
+                    url: event.rule.source_url || null,
+                  }
+                : null,
+            })),
+            error_code: result.status === "failed" ? "analysis_failed" : null,
+            error_message:
+              result.status === "failed"
+                ? (result.error ?? "Анализ не выполнен.")
+                : null,
+          },
+          started_at: auth.jobs.get(id)?.started ?? null,
         });
       } catch {
         return error(

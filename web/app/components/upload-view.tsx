@@ -1,9 +1,9 @@
-import type { ChangeEventHandler, ReactEventHandler } from "react";
+import { useRef, useState, type ReactEventHandler } from "react";
 import { Icon } from "./ui-icon";
 
 type UploadViewProps = {
   file: File | null;
-  onFileChange: ChangeEventHandler<HTMLInputElement>;
+  onFileSelect: (file: File | null) => void;
   onSubmit: ReactEventHandler<HTMLFormElement>;
   busy?: boolean;
   error?: string;
@@ -13,21 +13,41 @@ type UploadViewProps = {
 
 export function UploadView({
   file,
-  onFileChange,
+  onFileSelect,
   onSubmit,
   busy,
   error,
   maxBytes,
   uploadUncertain,
 }: UploadViewProps) {
+  const input = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const [selectionError, setSelectionError] = useState("");
+  function select(files: FileList | null) {
+    if (busy) return;
+    const selected = files?.[0] ?? null;
+    const message =
+      (files?.length ?? 0) > 1
+        ? "Выберите только одно видео."
+        : selected && !/\.mov$/i.test(selected.name)
+          ? "Выберите файл .mov."
+          : selected?.size === 0
+            ? "Файл пустой."
+            : selected && maxBytes && selected.size > maxBytes
+              ? "Размер видео превышает допустимый лимит."
+              : "";
+    setSelectionError(message);
+    onFileSelect(message ? null : selected);
+    if (input.current) input.current.value = "";
+  }
   return (
     <>
       <div className="fv-page-heading">
         <p className="fv-eyebrow">НОВАЯ ПРОВЕРКА</p>
         <h1>Проверка видео кассовой зоны</h1>
         <p className="fv-page-description">
-          Загрузите видео кассовой зоны, чтобы проверить видимые признаки
-          возможных нарушений.
+          Анализ видимых признаков возможных нарушений. Не является юридическим
+          заключением.
         </p>
       </div>
       <div className="fv-workspace">
@@ -45,8 +65,25 @@ export function UploadView({
           </div>
           <form onSubmit={onSubmit}>
             <label
-              className={`fv-file-zone${file ? " fv-file-zone-selected" : ""}`}
+              className={`fv-file-zone${file ? " fv-file-zone-selected" : ""}${dragging ? " fv-file-zone-dragging" : ""}`}
               htmlFor="video-file"
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!busy) setDragging(true);
+              }}
+              onDragLeave={(event) => {
+                if (
+                  !event.currentTarget.contains(
+                    event.relatedTarget as Node | null,
+                  )
+                )
+                  setDragging(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragging(false);
+                select(event.dataTransfer.files);
+              }}
             >
               <span className="fv-upload-icon">
                 <Icon name={file ? "video" : "upload"} />
@@ -57,7 +94,7 @@ export function UploadView({
               <span className="fv-file-zone-description">
                 {file
                   ? "Можно выбрать другой файл перед отправкой"
-                  : "Выберите файл на вашем устройстве"}
+                  : "Перетащите файл сюда или выберите на устройстве"}
               </span>
               <span className="fv-file-picker">
                 {file ? "Выбрать другой файл" : "Выбрать файл"}
@@ -67,12 +104,13 @@ export function UploadView({
               </span>
               <input
                 id="video-file"
+                ref={input}
                 name="video"
                 className="fv-file-input"
                 type="file"
                 accept=".mov"
                 disabled={busy}
-                onChange={onFileChange}
+                onChange={(event) => select(event.target.files)}
               />
             </label>
             {file && (
@@ -89,7 +127,15 @@ export function UploadView({
                     МБ
                   </p>
                 </div>
-                <Icon name="check" className="fv-file-check" />
+                <button
+                  type="button"
+                  className="fv-secondary-button"
+                  disabled={busy}
+                  onClick={() => select(null)}
+                  aria-label="Удалить выбранный файл"
+                >
+                  Удалить
+                </button>
               </div>
             )}
             {maxBytes && (
@@ -97,9 +143,9 @@ export function UploadView({
                 Максимальный размер: {Math.round(maxBytes / (1024 * 1024))} МБ.
               </p>
             )}
-            {error && (
+            {(selectionError || error) && (
               <p className="fv-inline-error" role="alert">
-                {error}
+                {selectionError || error}
               </p>
             )}
             {uploadUncertain && (

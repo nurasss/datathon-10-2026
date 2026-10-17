@@ -58,7 +58,7 @@ export default function DesignPreview() {
         <UploadView
           file={file}
           maxBytes={104857600}
-          onFileChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          onFileSelect={setFile}
           onSubmit={(event) => {
             event.preventDefault();
             setScreen("processing");

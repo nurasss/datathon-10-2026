@@ -1,4 +1,4 @@
-import { parseResult } from "../lib/contracts";
+import { parseBrowserResult } from "../lib/contracts";
 export type { Violation } from "../lib/contracts";
 // Retained for the unused legacy mock module; real responses use lib/contracts.ts.
 export type CheckResult = {
@@ -59,18 +59,45 @@ export async function login(
 export async function logout() {
   return request("session", { method: "DELETE" });
 }
+export async function getConfig(
+  signal?: AbortSignal,
+): Promise<{
+  allowed_extensions: string[];
+  max_upload_bytes: number;
+  deadline_sec: number;
+}> {
+  const config = await request("config", { signal });
+  if (
+    !Array.isArray(config.allowed_extensions) ||
+    !config.allowed_extensions.includes(".mov") ||
+    !Number.isSafeInteger(config.max_upload_bytes) ||
+    config.max_upload_bytes <= 0 ||
+    config.deadline_sec !== 300
+  )
+    throw new ApiError("Некорректная конфигурация сервиса.", 502);
+  return config;
+}
 export async function post(
   file: File,
   signal?: AbortSignal,
 ): Promise<{ job_id: string; started_at: number }> {
   const data = new FormData();
   data.append("file", file);
-  return request("analyze", { method: "POST", body: data, signal });
+  return request("analyze", {
+    method: "POST",
+    body: data,
+    signal,
+    headers: { "X-FV-Filename": encodeURIComponent(file.name) },
+  });
 }
 export async function get(jobId: string, signal?: AbortSignal) {
   const data = await request(`jobs/${encodeURIComponent(jobId)}`, { signal });
-  return {
-    job: parseResult(data.job, jobId),
-    started_at: typeof data.started_at === "number" ? data.started_at : null,
-  };
+  try {
+    return parseBrowserResult(data, jobId);
+  } catch {
+    throw new ApiError(
+      "Сервис вернул некорректный результат. Вердикт не показан.",
+      502,
+    );
+  }
 }

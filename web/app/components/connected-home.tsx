@@ -1,7 +1,15 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, get, getSession, login, logout, post } from "../api";
-import type { CheckResult } from "../../lib/contracts";
+import {
+  ApiError,
+  get,
+  getConfig,
+  getSession,
+  login,
+  logout,
+  post,
+} from "../api";
+import type { CheckResult, JobMeta } from "../../lib/contracts";
 import { validJobId } from "../../lib/contracts";
 import { AppShell } from "./app-shell";
 import { UploadView } from "./upload-view";
@@ -18,6 +26,8 @@ export default function Home() {
   const submitting = useRef(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResult | null>(null);
+  const [meta, setMeta] = useState<JobMeta | null>(null);
+  const [deadline, setDeadline] = useState(300);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [retry, setRetry] = useState(0);
@@ -27,9 +37,14 @@ export default function Home() {
   useEffect(() => {
     const controller = new AbortController();
     getSession(controller.signal)
-      .then((data) => {
+      .then(async (data) => {
+        const config = data.configured
+          ? await getConfig(controller.signal)
+          : null;
+        if (controller.signal.aborted) return;
         setConfigured(data.configured);
-        setMaxBytes(data.max_upload_bytes ?? 104857600);
+        setMaxBytes(config?.max_upload_bytes ?? 104857600);
+        setDeadline(config?.deadline_sec ?? 300);
         setAuth(data.authenticated ? "ready" : "login");
         const id = new URLSearchParams(window.location.search).get("job");
         if (data.authenticated && validJobId(id)) setJobId(id);
@@ -55,6 +70,7 @@ export default function Home() {
         failures = 0;
         setPollError("");
         setResult(response.job);
+        setMeta(response.meta);
         setStartedAt(response.started_at);
         if (response.job.status === "processing")
           timer = setTimeout(poll, 2000);
@@ -89,13 +105,16 @@ export default function Home() {
   }, [startedAt, result?.status]);
 
   async function signIn(key: string) {
-    const data = await login(key);
+    await login(key);
+    const config = await getConfig();
     setAuth("ready");
     setConfigured(true);
-    setMaxBytes(data.max_upload_bytes);
+    setMaxBytes(config.max_upload_bytes);
+    setDeadline(config.deadline_sec);
     setError("");
     setJobId(null);
     setResult(null);
+    setMeta(null);
     window.history.replaceState(null, "", window.location.pathname);
   }
   async function signOut() {
@@ -115,6 +134,7 @@ export default function Home() {
     setFile(null);
     setJobId(null);
     setResult(null);
+    setMeta(null);
     setStartedAt(null);
     setPollError("");
     setError("");
@@ -153,8 +173,7 @@ export default function Home() {
       setBusy(false);
     }
   }
-  function choose(event: React.ChangeEvent<HTMLInputElement>) {
-    const selected = event.target.files?.[0] ?? null;
+  function choose(selected: File | null) {
     setError("");
     setUploadUncertain(false);
     if (
@@ -170,7 +189,7 @@ export default function Home() {
             ? "Файл пустой."
             : "Размер видео превышает допустимый лимит.",
       );
-      event.target.value = "";
+
       setFile(null);
       return;
     }
@@ -203,7 +222,7 @@ export default function Home() {
                 <button className="fv-secondary-button" onClick={newCheck}>
                   Новая проверка
                 </button>
-                <span className="fv-muted">{file?.name}</span>
+                <span className="fv-muted">{meta?.filename ?? file?.name}</span>
               </div>
               {error && (
                 <p className="fv-inline-error" role="alert">
@@ -221,7 +240,7 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              {elapsed >= 300 && result?.status === "processing" && (
+              {elapsed >= deadline && result?.status === "processing" && (
                 <p className="fv-inline-error" role="status">
                   Превышен лимит 5 минут. Продолжаем запрашивать фактический
                   результат; проверка не считается успешно завершённой.
@@ -236,16 +255,22 @@ export default function Home() {
                   result?.status === "done" ? result.violations : null
                 }
                 errorMessage={
-                  result?.status === "failed" ? result.error : undefined
+                  result?.status === "failed"
+                    ? (meta?.error_message ?? result.error)
+                    : undefined
                 }
-                duration={result?.video_duration_sec ?? undefined}
+                duration={meta?.duration_sec ?? undefined}
+                stage={meta?.stage}
+                videoUrl={meta?.video_url}
+                filename={meta?.filename ?? file?.name}
+                deadline={deadline}
                 connectionLost={!!pollError}
               />
             </>
           ) : (
             <UploadView
               file={file}
-              onFileChange={choose}
+              onFileSelect={choose}
               onSubmit={upload}
               busy={busy}
               error={error}
