@@ -5,9 +5,21 @@ type UploadViewProps = {
   file: File | null;
   onFileChange: ChangeEventHandler<HTMLInputElement>;
   onSubmit: ReactEventHandler<HTMLFormElement>;
+  busy?: boolean;
+  error?: string;
+  maxBytes?: number;
+  uploadUncertain?: boolean;
 };
 
-export function UploadView({ file, onFileChange, onSubmit }: UploadViewProps) {
+export function UploadView({
+  file,
+  onFileChange,
+  onSubmit,
+  busy,
+  error,
+  maxBytes,
+  uploadUncertain,
+}: UploadViewProps) {
   return (
     <>
       <div className="fv-page-heading">
@@ -58,6 +70,8 @@ export function UploadView({ file, onFileChange, onSubmit }: UploadViewProps) {
                 name="video"
                 className="fv-file-input"
                 type="file"
+                accept=".mov"
+                disabled={busy}
                 onChange={onFileChange}
               />
             </label>
@@ -78,8 +92,28 @@ export function UploadView({ file, onFileChange, onSubmit }: UploadViewProps) {
                 <Icon name="check" className="fv-file-check" />
               </div>
             )}
-            <button type="submit" className="fv-primary-button">
-              <span>Анализировать видео</span>
+            {maxBytes && (
+              <p className="fv-upload-note">
+                Максимальный размер: {Math.round(maxBytes / (1024 * 1024))} МБ.
+              </p>
+            )}
+            {error && (
+              <p className="fv-inline-error" role="alert">
+                {error}
+              </p>
+            )}
+            {uploadUncertain && (
+              <p className="fv-inline-error">
+                Неизвестно, принял ли сервер файл. Уточните состояние у
+                оператора перед повторной загрузкой.
+              </p>
+            )}
+            <button
+              type="submit"
+              className="fv-primary-button"
+              disabled={busy || !file || uploadUncertain}
+            >
+              <span>{busy ? "Отправляем видео…" : "Анализировать видео"}</span>
               <Icon name="arrow" />
             </button>
           </form>
@@ -111,7 +145,10 @@ export function UploadView({ file, onFileChange, onSubmit }: UploadViewProps) {
               <span className="fv-guide-number">3</span>
               <div>
                 <h3>Изучите результат</h3>
-                <p>Проверьте найденные события, их время и описания.</p>
+                <p>
+                  Проверьте события, кадры и источники. Перейдите к нужному
+                  моменту в видео.
+                </p>
               </div>
             </li>
           </ol>

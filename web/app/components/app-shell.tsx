@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import { Icon } from "./ui-icon";
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({
+  children,
+  actions,
+}: {
+  children: ReactNode;
+  actions?: ReactNode;
+}) {
   return (
     <div className="fv-app">
       <a className="fv-skip-link" href="#main-content">
@@ -20,6 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span className="fv-header-divider" />
           <span className="fv-header-context">Проверка видеозаписей</span>
           <span className="fv-header-label">Кассовая дисциплина</span>
+          {actions}
         </div>
       </header>
       <main id="main-content" className="fv-main">
