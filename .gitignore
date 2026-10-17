@@ -15,7 +15,8 @@ __pycache__/
 *.mp4
 *.avi
 *.mkv
-data/
+data/*
+!data/annotations/
 artifacts/
 *.sqlite*
 *.log
