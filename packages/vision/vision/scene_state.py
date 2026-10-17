@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 from .scene.screen import ScreenClassifier
-from .scene.desk import DeskItem, DeskItemDetector
+from .scene.desk import DeskItem, DeskItemDetector, box_iou
 from .scene.safe import SafeStateDetector
 from .scene.door import DoorStateDetector
 from .scene.hands import HandCountDetector
@@ -102,7 +102,14 @@ def analyze_scene(
     # Stationary equipment (laptop, bill counter, desk phone, lamp, etc.)
     stationary_boxes: list[tuple[float, float, float, float]] = list(ctx.get("stationary_boxes", []))
     if not stationary_boxes:
-        stationary_boxes = desk_detector.extract_stationary_equipment(first_frame, flat_dets, desk_box)
+        ref_img = ctx.get("ref_frame", first_frame)
+        init_dets = ctx.get("initial_detections", [])
+        if not init_dets:
+            init_dets = [
+                d for t_val, f_dets in zip(timestamps, detections) if t_val <= 2.5
+                for d in f_dets
+            ]
+        stationary_boxes = desk_detector.extract_stationary_equipment(ref_img, init_dets, desk_box)
 
     # Localize safe (grey rectangular cabinet near wall/desk in G05/G07)
     safe_box = safe_detector.localize_safe(first_frame, desk_box, ctx.get("safe_box"))
@@ -110,11 +117,42 @@ def analyze_scene(
     # Localize door (glass area with entry/exit tracks or vertical frame)
     door_box = door_detector.localize_door(first_frame, detections, ctx.get("door_box"))
 
+    # Stationary laptop box anchored on desk surface
+    stationary_laptop_box = ctx.get("stationary_laptop_box")
+    if stationary_laptop_box is None:
+        for f_dets in detections:
+            for d in f_dets:
+                if d.get("cls") == "laptop" and d.get("score", 0) >= 0.22:
+                    bx = d["box"]
+                    bcx = (bx[0] + bx[2]) / 2.0
+                    bcy = (bx[1] + bx[3]) / 2.0
+                    if 0.35 <= bcx <= 0.75 and 0.28 <= bcy <= 0.62:
+                        stationary_laptop_box = bx
+                        break
+            if stationary_laptop_box is not None:
+                break
+        if stationary_laptop_box is None:
+            for f_dets in detections:
+                for d in f_dets:
+                    if d.get("cls") == "tv" and d.get("score", 0) >= 0.20:
+                        bx = d["box"]
+                        bcx = (bx[0] + bx[2]) / 2.0
+                        bcy = (bx[1] + bx[3]) / 2.0
+                        if 0.35 <= bcx <= 0.75 and 0.28 <= bcy <= 0.62:
+                            stationary_laptop_box = bx
+                            break
+                if stationary_laptop_box is not None:
+                    break
+
+    if stationary_laptop_box is not None and stationary_laptop_box not in stationary_boxes:
+        stationary_boxes.append(stationary_laptop_box)
+
     # Reference frame from early video for background comparison
     ref_frame = ctx.get("ref_frame", first_frame)
 
     states: list[SceneState] = []
     prev_frame = None
+    prev_screen_state = None
 
     for i, (frame, t, frame_dets) in enumerate(zip(frames, timestamps, detections)):
         is_initial = (t <= 2.5)
@@ -181,9 +219,33 @@ def analyze_scene(
             # Calibrated CV Branch (with stationary suppression & gates)
             # -------------------------------------------------------------
             # 1. Screen state
-            laptop_candidates = [d["box"] for d in frame_dets if d.get("cls") == "laptop" and d.get("score", 0) > 0.28]
-            current_laptop_box = laptop_candidates[0] if laptop_candidates else (stationary_boxes[0] if stationary_boxes else None)
+            laptop_candidates = [
+                d["box"] for d in frame_dets
+                if d.get("cls") == "laptop" and d.get("score", 0) >= 0.22
+            ]
+            if not laptop_candidates:
+                laptop_candidates = [
+                    d["box"] for d in frame_dets
+                    if d.get("cls") == "tv" and d.get("score", 0) >= 0.20
+                ]
+            desk_laptop = None
+            for lc in laptop_candidates:
+                lcx = (lc[0] + lc[2]) / 2.0
+                lcy = (lc[1] + lc[3]) / 2.0
+                if 0.35 <= lcx <= 0.75 and 0.28 <= lcy <= 0.62:
+                    desk_laptop = lc
+                    stationary_laptop_box = lc
+                    break
+
+            current_laptop_box = desk_laptop or stationary_laptop_box
             screen_state = screen_clf.classify(frame, current_laptop_box)
+
+            # Hold document state during momentary person occlusion (standing up / walking in front of screen)
+            if screen_state != "document" and prev_screen_state == "document" and current_laptop_box is not None:
+                if any(box_iou(pb, current_laptop_box) > 0.02 for pb in person_boxes):
+                    screen_state = "document"
+
+            prev_screen_state = screen_state
 
             # 2. Desk items detection (excluding stationary devices & enforcing temporal emergence)
             desk_items = desk_detector.detect_items(
@@ -202,7 +264,9 @@ def analyze_scene(
             )
 
             # 4. Room entrance door state estimation (returns None if door not in FOV)
-            door_open = door_detector.estimate_open_score(frame, door_box, ref_frame)
+            door_open = door_detector.estimate_open_score(
+                frame, door_box, ref_frame, person_boxes=person_boxes
+            )
 
             # 5. Cashier hand counting estimation (returns None if uncertain)
             hand_counting = hands_detector.estimate_counting_score(
@@ -220,5 +284,21 @@ def analyze_scene(
             )
         )
         prev_frame = frame
+
+    # Backward/forward occlusion fill: if a window contains active document display,
+    # and in an occluded frame cashier is standing directly in front of laptop, keep document
+    if any(s.screen_state == "document" for s in states):
+        for i, s in enumerate(states):
+            if s.screen_state in {"off", "lockscreen", None} and stationary_laptop_box is not None:
+                fd = detections[i]
+                p_boxes = [d["box"] for d in fd if d.get("cls") == "person" and d.get("score", 0) >= 0.30]
+                if any(box_iou(pb, stationary_laptop_box) > 0.02 for pb in p_boxes):
+                    has_doc_near = any(
+                        states[j].screen_state == "document"
+                        for j in range(max(0, i - 2), min(len(states), i + 3))
+                        if j != i
+                    )
+                    if has_doc_near:
+                        s.screen_state = "document"
 
     return states
