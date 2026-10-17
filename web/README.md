@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ForteVision — веб-интерфейс
 
-## Getting Started
+Next.js-интерфейс проверки видеозаписей кассовой зоны. Пользователь выбирает `.mov`, запускает проверку, видит ожидание и текстовый результат.
 
-First, run the development server:
+**Текущее подключение:** `app/page.tsx` использует `app/mock.ts`. Наличие интерфейса не подтверждает работу AI или интеграцию с сервером. `app/api.ts` пока не подключён к странице.
 
-```bash
+## Запуск
+
+```sh
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Откройте `http://localhost:3000`. Production-сборка и запуск:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```sh
+npm run build
+npm exec next start
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Сборка проверена на Node.js 24.19.0. В этой Windows-среде Node.js 24.13.1 завершал дочерний процесс CSS-сборщика Turbopack до подключения; с 24.19.0 сборка завершилась успешно. Версии зависимостей и конфигурация команды сохранены.
 
-## Learn More
+## Структура
 
-To learn more about Next.js, take a look at the following resources:
+| Файл | Ответственность |
+|---|---|
+| `app/page.tsx` | Существующие обработчики файла, отправка и опрос статуса |
+| `app/components/app-shell.tsx` | Шапка, основная область, подвал и skip-link |
+| `app/components/upload-view.tsx` | Оформление выбора файла; получает обработчики через props |
+| `app/components/job-view.tsx` | Оформление ожидания, результата и ошибки; без запросов |
+| `app/components/ui-icon.tsx` | Локальные SVG-иконки |
+| `app/globals.css` | Палитра, стили, адаптивность, focus и reduced motion |
+| `app/layout.tsx` | Русский язык страницы, название вкладки, глобальные стили |
+| `app/api.ts` | Существующий клиент API; без изменений |
+| `app/mock.ts` | Существующая демонстрационная реализация; без изменений |
+| `docs/design.md` | Границы оформления, требования кейса и результаты проверок |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Дизайнерская версия
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Оформлены только существующие состояния: выбор файла, выбранный файл, ожидание, результат с событиями, результат без событий и ошибка `error`. Нет новых экранов входа, плеера, истории, выгрузки, drag-and-drop или повторной проверки.
 
-## Deploy on Vercel
+Обработчики в `page.tsx` сохранены, включая исходные браузерные `alert`, проверку MIME-типа, интервал опроса 2 секунды и завершение по `done/error`. Улучшение этих обработчиков и переход к серверному контракту должны быть отдельным изменением.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Шрифты системные; оформление не загружает шрифты, иконки или изображения с внешних сайтов. Компоненты не подменяют полученные результаты демонстрационными карточками.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Проверки
+
+```sh
+npm run build
+npm exec eslint app/page.tsx app/layout.tsx app/components
+npm run lint
+```
+
+Общий lint пока обнаруживает существующую ошибку `prefer-const` и предупреждение о неиспользуемом параметре в `app/mock.ts`. Файл оставлен без изменений. Подробности — в [документации дизайна](docs/design.md).
+
+Для проверки оформления используйте вымышленные тексты и разрешённые тестовые файлы. Конкурсные видео, кадры и их описания не передавайте облачным AI-инструментам.

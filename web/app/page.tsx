@@ -1,7 +1,10 @@
 'use client';
 import { post, get } from "./mock";
-import { useState, useEffect, SubmitEventHandler } from "react";
-// import Image from "next/image";
+import { useState, useEffect } from "react";
+import type { Violation } from "./api";
+import { AppShell } from "./components/app-shell";
+import { UploadView } from "./components/upload-view";
+import { JobView } from "./components/job-view";
 
 function FileUploadForm({ setJobID }: { setJobID: (jobId: string) => void }) {
 	const [file, setFile] = useState<File | null>(null);
@@ -28,19 +31,14 @@ function FileUploadForm({ setJobID }: { setJobID: (jobId: string) => void }) {
 			alert("Please select a file to upload.");
 		}
 	};
-	return (
-		<form onSubmit={handleUpload}>
-			<input type="file" onChange={handleFile} />
-			<input type="submit" value="Upload" />
-		</form>
-	);
+	return <UploadView file={file} onFileChange={handleFile} onSubmit={handleUpload} />;
 }
 
 function JobStatus({ statusId }: { statusId: string }) {
 
 	const [status, setStatus] = useState<string | null>(null);
 	const [verdict, setVerdict] = useState<string | null>(null);
-	const [violations, setViolations] = useState<any[] | null>(null);
+	const [violations, setViolations] = useState<Violation[] | null>(null);
 
 	useEffect(() => {
 		const interval = setInterval(async () => {
@@ -62,42 +60,11 @@ function JobStatus({ statusId }: { statusId: string }) {
 		return () => clearInterval(interval);
 	}, [statusId]);
 
-	return (
-		<div>
-			<p>Job ID: {statusId}</p>
-			<p>Status: {status}</p>
-			{status === "done" && (
-				<div>
-					<p>Verdict: {verdict}</p>
-					{verdict === "violation" && violations && (
-						<div>
-							<h3>Violations:</h3>
-							<ul>
-								{violations.map((violation, index) => (
-									<li key={index}>
-										Type: {violation.type}, Timecode: {violation.timecode_sec}, Description: {violation.description}
-									</li>
-								))}
-							</ul>
-						</div>
-					)}
-				</div>
-			)}
-			{status === "error" && <p>An error occurred while processing the job.</p>}
-		</div>
-	);
+	return <JobView jobId={statusId} status={status} verdict={verdict} violations={violations} />;
 }
 
 export default function Home() {
 	const [jobId, setJobId] = useState<string | null>(null);
-	let JobView = jobId ? <JobStatus statusId={jobId} /> : <FileUploadForm setJobID={setJobId}/>;
-	return (
-		<div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-		<main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-		
-		{JobView}
-
-		</main>
-		</div>
-	);
+	const content = jobId ? <JobStatus statusId={jobId} /> : <FileUploadForm setJobID={setJobId}/>;
+	return <AppShell>{content}</AppShell>;
 }
