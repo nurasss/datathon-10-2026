@@ -143,6 +143,29 @@ FV_ENV_FILE=~/.config/forte-vision/forte-vision.env $FV/infra/tunnel/run_tunnel.
 $FV/infra/tunnel/public_url.sh      # ngrok API → метрики cloudflared → логи → NGROK_DOMAIN
 ```
 
+### 2.1 Выкат новой версии (обновление кода в `~/fortevision/app`)
+
+Код прода лежит в `~/fortevision/app`, а не в `~/Desktop`: launchd-агентам macOS (TCC) запрещён доступ
+к Desktop. Выкат запускает **человек из Terminal** (у терминала доступ к Desktop есть):
+
+```sh
+FV=/Users/nuras/Desktop/datathon/fv-infra
+
+$FV/infra/deploy.sh --branch integ --dry-run   # что изменится (ничего не трогает)
+$FV/infra/deploy.sh --branch integ             # выкатить
+$FV/infra/deploy.sh --rollback                 # вернуть предыдущую версию из ~/fortevision/app.prev
+```
+
+Что делает: снимок текущего кода в `app.prev` → `git archive` ветки (без `.git`) → rsync в
+`~/fortevision/app` (не трогает `data/`, `artifacts/`, `.venv`, `.env`) → при изменившемся
+`apps/api/requirements.txt` выполняет `uv pip install --python ~/fortevision/app/.venv/bin/python -r …` →
+`launchctl kickstart -k gui/$UID/com.fortevision.api` → ждёт `GET /api/v1/health` →
+`healthcheck.sh --public` на Х-20. Лог: `~/Library/Logs/forte-vision/deploy-*.log`.
+
+Перед выкатом проверяется запас места на диске (полный диск роняет SQLite в проде): минимум 1000 МБ.
+Ветка-кандидат сдачи — `integ` (там `onnxruntime==1.20.1`, модель `nanodet_416.onnx` и закрытые
+`/docs` при `FV_ENABLE_DOCS=0`).
+
 ---
 
 ## 3. Чек-лист перед сдачей (утро, 15 минут)
@@ -158,6 +181,8 @@ $FV/infra/tunnel/public_url.sh      # ngrok API → метрики cloudflared �
    $FV/infra/healthcheck.sh --public --file "/Users/nuras/Desktop/datathon/data_raw/open/videos/Х-14.mov"
    ```
    Это 28.7 МБ, то есть реальный сценарий жюри. Смотрите, что `[3/6]` дал `202`, а `[4/6]` — `done ≤ 300 с`.
+   На загруженной машине (load average > 10) клип 28.7 МБ может не уложиться в 300 с — тогда сначала
+   снизить нагрузку и повторить; статус задачи при этом всё равно дойдёт до `done` (см. §6).
 5. Открыть публичный адрес в браузере — отвечает (у ngrok может показаться страница-заглушка
    с кнопкой «Visit site»: это его предупреждение для браузеров, API-клиентов оно не касается).
 6. Убедиться, что адрес совпадает с тем, который вы отдаёте жюри, и в `.env` ничего не пропало.
@@ -178,6 +203,7 @@ $FV/infra/tunnel/public_url.sh      # ngrok API → метрики cloudflared �
 | Публичный адрес **изменился** | запущен `cloudflared-quick` или ngrok без статического домена | проверить `FV_TUNNEL_PROVIDER`/`NGROK_DOMAIN`; вернуть ngrok + статический домен, kickstart туннеля |
 | Mac ушёл в сон | не загружен агент caffeinate | `launchctl print gui/$(id -u)/com.fortevision.caffeinate`; проверить, что установка прошла без ошибок |
 | Задача `failed` с `OUT_OF_MEMORY` | 2 параллельных анализа при нехватке памяти | поставить `FV_WORKER_CONCURRENCY=1`, kickstart; следить за `vm_stat`/Activity Monitor |
+| В `api.err.log` sqlite **«unable to open database file»**, задачи встают странно | на диске почти нет места (17.10: 525 МБ из 113 ГБ — диск 100%) | освободить диск (`df -h`; кандидаты: `uv cache clean` ≈0.8 ГБ, `~/Library/Android/sdk` ≈4.7 ГБ, старые проекты в `~/Desktop`), затем `launchctl kickstart -k gui/$(id -u)/com.fortevision.api` |
 | Задача `failed` с `DECODE_FAILED` | файл реально битый (не наша ошибка) | это корректное поведение: жюри получит `failed`, и это правильнее, чем пустой вердикт |
 
 Диагностика «на месте»: реальный `job_id` живёт в БД `$FV_APP_ROOT/data/jobs.db`
@@ -190,7 +216,7 @@ $FV/infra/tunnel/public_url.sh      # ngrok API → метрики cloudflared �
 
 | Вариант | Адрес постоянный? | Нужен аккаунт? | Статус |
 |---|---|---|---|
-| `ngrok` + бесплатный статический домен | **да** | да (человек) | основной; скрипт готов, на машине ngrok пока не установлен |
+| `ngrok` + бесплатный статический домен | **да** | да (человек) | основной; установлен и проверен вживую 17.10 на Х-20 и Х-14 (см. §6) |
 | `cloudflared` named tunnel + свой домен | **да** | домен в Cloudflare | альтернатива: `FV_TUNNEL_PROVIDER=cloudflared-named`, `CLOUDFLARED_TUNNEL=<имя>`, `CLOUDFLARED_PUBLIC_URL=https://…` |
 | `cloudflared` quick tunnel | нет (случайный `*.trycloudflare.com`) | нет | **только отладка**; именно так проверялась вся транспортная часть (см. отчёт) |
 
@@ -198,11 +224,18 @@ $FV/infra/tunnel/public_url.sh      # ngrok API → метрики cloudflared �
 
 ## 6. Что НЕ проверено вживую (честно)
 
-* Агенты launchd не загружались в систему ни разу: скрипты и plist подготовлены и провалидированы
-  (`plutil -lint`), но `launchctl bootstrap` выполняет человек — по инструкции выше.
-* Путь ngrok (authtoken + статический домен) не проверен: на машине нет ngrok и нет токена.
-  Транспорт «публичный HTTPS → 127.0.0.1:8000» проверен на cloudflared quick tunnel, включая
-  загрузку 28.7 МБ (SHA-256 совпал).
+* Агенты launchd установлены **из копии в `~/fortevision/{app,infra,data}`** (не из Desktop: TCC
+  запрещает демонам доступ к Desktop). Все три в состоянии `running`, публичный health отвечает.
+  Перезапуски идут через `launchctl kickstart`; полного цикла «reboot → вход → сервис поднялся» ещё
+  не было.
+* Путь ngrok проверен вживую 17.10 (после того как куратор установил ngrok и создал статический домен):
+  `https://craig-taxaceous-marylouise.ngrok-free.dev` → `127.0.0.1:8000`. Х-20 (2.4 МБ): **PASS**,
+  `done` за 59 с. Х-14 (28.7 МБ): задача дошла до `done`, но end-to-end **326 с** (загрузка ~66 с +
+  обработка 259 с) — больше 300-секундного бюджета из-за сильной загрузки машины (load average ~14,
+  параллельные задачи на этой же машине); сам транспорт ngrok работал нормально. Перед сдачей повторить
+  на спокойной машине (см. также §3 п.4).
+* `infra/deploy.sh` вживую не запускался: проверен `--dry-run` (в т.ч. на боевых путях) и полный цикл
+  в песочнице — rsync, снимок `app.prev`, откат (см. отчёт). Боевой выкат запускает куратор.
 * Прокси Next.js (порт 3000) не проверялся: это код другого участника.
 * Полный 5-минутный сценарий жюри (много видео подряд) не воспроизводился: это нагрузочный тест,
   его здесь сознательно не запускали.

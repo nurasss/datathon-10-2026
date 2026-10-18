@@ -8,6 +8,7 @@ end-to-end проверка и документы для сдачи. **Код п
 ```
 infra/
 ├── env/forte-vision.env.example     единственный файл настроек и секретов (копируется в ~/.config)
+├── deploy.sh                        выкат продовой копии (~/fortevision/app): rsync, зависимости, kickstart, откат
 ├── healthcheck.sh                   проверка «как жюри»: 401, POST, опрос, контракт JSON, JPEG
 ├── release_gate.sh                  финальная проверка перед сдачей (см. ниже)
 ├── macos/
@@ -42,6 +43,25 @@ $B/infra/release_gate.sh --local    # предварительно, без ту�
 три сохранённых ответа (короткий/длинный/с нарушением) по контракту → `healthcheck --both --strict-docs`
 на коротком ролике → `--selftest` валидатора. Печатает публичный адрес, время и итог. Нагрузочных
 тестов внутри нет. Всё read-only.
+
+## Выкат новой версии (deploy.sh)
+
+`infra/deploy.sh` обновляет продовую копию приложения в `~/fortevision/app` (launchd-агенты не могут
+читать `~/Desktop` из-за TCC, поэтому прод живёт в домашнем каталоге; запускает выкат **человек из
+Terminal**):
+
+```sh
+B=/Users/nuras/Desktop/datathon/fv-infra
+
+$B/infra/deploy.sh --branch integ --dry-run   # план и diff, ничего не трогает
+$B/infra/deploy.sh --branch integ             # снимок → rsync → зависимости → kickstart → healthcheck --public
+$B/infra/deploy.sh --rollback                 # откат из ~/fortevision/app.prev
+```
+
+Зависимости обновляются в `~/fortevision/app/.venv` (через `uv pip install -r`) только если изменился
+`apps/api/requirements.txt`. Перед выкатом проверяется запас места на диске (минимум 1000 МБ): полный
+диск уже ронял SQLite в проде. Живые `data/`, `artifacts/`, `.env` и `.venv` не трогаются, предыдущая
+версия кода сохраняется в `app.prev`.
 
 ## Быстрые команды
 
