@@ -26,7 +26,7 @@ def test_entry_uses_first_door_appearance_without_requiring_stability():
 
 def test_output_retime_does_not_change_support_or_event_membership():
     trigger = {'kind': 'cashier_leave', 't': 8, 'end': 12, 'track_id': 1, 'facts': {}}
-    event = make_event('LEAVE_VALUABLES', 8, 12, 'fact', RuleRegistry.load(), 15,
+    event = make_event('LEAVE_SCREEN_UNLOCKED', 8, 12, 'fact', RuleRegistry.load(), 15,
                        {'trigger': trigger, 'support_times': [8,8.2,8.4]})
     events = [event]
     samples = [{'t': t, 'cashier_seated': t < 4} for t in range(13)]
@@ -36,3 +36,13 @@ def test_output_retime_does_not_change_support_or_event_membership():
     assert event.meta['trigger'] == trigger and event.meta['support_times'] == [8,8.2,8.4]
     assert event.meta['action_onset']['rule_timecode_sec'] == 8
     assert event.observation.startswith('С 4.00 с:')
+
+
+def test_selected_policy_keeps_all_other_types_at_production_timestamps():
+    trigger = {'kind': 'cashier_leave', 't': 8, 'end': 12, 'track_id': 1, 'facts': {}}
+    events = [make_event(code, 8, 12, 'fact', RuleRegistry.load(), 15,
+                        {'trigger':trigger,'support_times':[8,8.2,8.4]})
+              for code in ('LEAVE_VALUABLES','SAFE_OPEN','OUTSIDER','DOOR_OPEN','LEAVE_DURING_SERVICE')]
+    before = [(e.start_sec,e.peak_sec,e.end_sec,list(e.evidence_times),dict(e.meta)) for e in events]
+    retime_events(events,[{'t':t,'cashier_seated':t<4} for t in range(13)],15)
+    assert before == [(e.start_sec,e.peak_sec,e.end_sec,e.evidence_times,e.meta) for e in events]

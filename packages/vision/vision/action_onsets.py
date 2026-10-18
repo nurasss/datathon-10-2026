@@ -5,6 +5,10 @@ Rule windows/thresholds stay untouched: retiming cannot create/drop an event.
 """
 from __future__ import annotations
 
+# Selected on frozen task7 replay, not on a new full evaluation. Other event
+# types keep d6d80e5 timing. See artifacts/task8/timing_selection.json.
+SELECTED_RETIME_CODES = frozenset({'LEAVE_SCREEN_UNLOCKED'})
+
 
 def departure_onset(samples, boundary):
     """Latest seated->not-seated transition belonging to this departure.
@@ -45,10 +49,13 @@ def entry_onset(samples, track_id, boundary, door, min_score):
     return boundary, 'no_observed_track_keep_rule_boundary', None
 
 
-def retime_events(events, samples, duration, door=None, min_score=.3):
+def retime_events(events, samples, duration, door=None, min_score=.3,
+                  allowed_codes=SELECTED_RETIME_CODES):
     """Mutate only already accepted event timing/evidence, keeping provenance."""
     samples = sorted(samples, key=lambda s: s['t'])
     for event in events:
+        if allowed_codes is not None and event.event_code not in allowed_codes:
+            continue
         trigger = event.meta.get('trigger', {})
         kind = trigger.get('kind')
         boundary = trigger.get('t', event.start_sec)

@@ -24,6 +24,14 @@ uniform/window/evidence paths for pixel equality and unchanged timestamps.
 
 ## Output-only action retiming
 
+The rejected `901793a` all-types policy is **not** the release policy. Based
+solely on frozen task7 replay, the release retimes **LEAVE_SCREEN_UNLOCKED only**;
+every other type retains its exact `d6d80e5` timestamps and evidence times.
+`scripts/select_task8_timing.py` and `artifacts/task8/timing_selection.json`
+document the choice. Global all-TP median improves **2.1→1.4 s**, max stays
+**17 s**, verdicts remain **11/0/10/19**. Screen-only local max rises 5.4→6.2 s,
+which is explicitly recorded; there are no per-video exceptions.
+
 `vision/action_onsets.py` runs **after** all rule checks, event merging, A/B
 precedence and output limits. It never creates or removes an accepted event or
 feeds back into any trigger/rule. The original decision/support timestamps stay
@@ -60,9 +68,12 @@ sleep, no polling, exclusive start marker and no automatic reruns. Cancel that
 timer before any early B5 evaluation pair to prevent duplicates.
 
 `scripts/replay_task8_onsets.py` uses frozen task7 JSON only, no model or video
-inference. Initial replay is saved in `artifacts/task8/onset_replay.json`.
-Its timing errors worsen (median 2.1→2.8 s, max 17→32 s): this is a diagnostic
-limitation, not a successful attainment of the ≤2 s goal and not a vision score.
+inference. The rejected all-types replay is preserved in
+`artifacts/task8/replay_all_types.json` (median 2.1→2.8 s, max 17→32 s).
+The selected replay is `artifacts/task8/replay_selected.json`.
+The alternative global backward correction is **not applied**: only **3/11** TP
+videos have positive signed error, below the curator's required 8/11.
+These are replay diagnostics, not final vision scores.
 
 `scripts/report_task8.py` derives final before/after/mirror confusion matrices,
 all-TP timecode errors, same-TP cohort statistics, all 19 mirror normal outcomes,

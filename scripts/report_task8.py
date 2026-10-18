@@ -86,6 +86,8 @@ def main():
         cohort[name] = {'median':median(errors) if errors else None,'max':max(errors) if errors else None,'count':len(errors)}
     log = subprocess.check_output(['git','log','--oneline','-12'],cwd=ROOT,text=True).strip()
     payload = {'metric_definition':'For every label_sec in every video-level TP: min abs(predicted timecode_sec-label_sec). Includes every label of multi-label TP, without type filtering.',
+               'timing_policy':'Retiming only LEAVE_SCREEN_UNLOCKED, chosen on frozen task7 replay; d6d80e5 timing for all other types; no global shift.',
+               'timing_selection_source':str(TASK/'timing_selection.json'),
                'before':before,'after':normal,'hflip':flipped,
                'same_tp_cohort':{'videos':sorted(common),'metrics':cohort},
                'normal_acceptance':normal['fp']==0 and normal['tp']>=11 and normal['analysis_errors']==0,
@@ -104,7 +106,8 @@ def main():
     lines += ['',f"Обычные вердикты FP=0, TP≥11: **{'выполнено' if payload['normal_acceptance'] else 'НЕ выполнено'}**.",
               f"Median ≤2 с: **{'выполнено' if payload['normal_timecode_goal_met'] else 'НЕ выполнено'}**.",
               f"Зеркало: FP на {len(flipped['normal_videos'])} нормах = **{payload['hflip_normals_fp']}**.",
-              '', 'Таймкод вычисляется после rule gates, merging и A/B-приоритета; исходное окно сохранено в `meta.action_onset`.',
+              '', 'Выбрано по replay: новый таймкод только LEAVE_SCREEN_UNLOCKED; остальные типы — d6d80e5. Общий сдвиг не применяется (поздних 3/11, нужно ≥8).',
+              'Retiming выполняется после rule gates, merging и A/B-приоритета; исходное окно сохранено в `meta.action_onset`.',
               'Метрика включает каждую метку каждого TP (в том числе две метки Х-4), без фильтрации по типу.',
               '', '## Нормы --hflip','', '| Видео | Исход | События |','|---|---|---|']
     lines += [f"| {r['video']} | {r['outcome']} | {r['events']} |" for r in flipped['normal_videos']]
