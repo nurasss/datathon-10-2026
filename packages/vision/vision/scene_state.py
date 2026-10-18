@@ -111,11 +111,39 @@ def analyze_scene(
             ]
         stationary_boxes = desk_detector.extract_stationary_equipment(ref_img, init_dets, desk_box)
 
-    # Localize safe (grey rectangular cabinet near wall/desk in G05/G07)
+    # Initial laptop support check (desk_items only runs if laptop found in >= 50% of frames in first 3s)
+    init_laptop_frames = 0
+    init_total_frames = 0
+    for t_val, f_dets in zip(timestamps, detections):
+        if t_val <= 3.0:
+            init_total_frames += 1
+            if any(d.get("cls") == "laptop" and d.get("score", 0) >= 0.22 for d in f_dets):
+                init_laptop_frames += 1
+
+    if init_total_frames > 0:
+        has_laptop_support = (init_laptop_frames / float(init_total_frames)) >= 0.50
+    elif "has_laptop_support" in ctx:
+        has_laptop_support = ctx["has_laptop_support"]
+    else:
+        has_laptop_support = any(
+            any(d.get("cls") == "laptop" and d.get("score", 0) >= 0.22 for d in f_dets)
+            for f_dets in detections
+        )
+
+    # Reference frame from early video for background comparison
+    ref_frame = ctx.get("ref_frame", first_frame)
+
+    # Localize safe (grey metallic rectangular cabinet; None if not confirmed)
     safe_box = safe_detector.localize_safe(first_frame, desk_box, ctx.get("safe_box"))
 
-    # Localize door (glass area with entry/exit tracks or vertical frame)
-    door_box = door_detector.localize_door(first_frame, detections, ctx.get("door_box"))
+    # Localize door (by human entry/exit tracks; None if no one enters/exits)
+    door_box = door_detector.localize_door(
+        first_frame,
+        detections,
+        ctx.get("door_box"),
+        ref_frame=ref_frame,
+        timestamps=timestamps,
+    )
 
     # Stationary laptop box anchored on desk surface
     stationary_laptop_box = ctx.get("stationary_laptop_box")
@@ -157,14 +185,14 @@ def analyze_scene(
     for i, (frame, t, frame_dets) in enumerate(zip(frames, timestamps, detections)):
         is_initial = (t <= 2.5)
 
-        # Find cashier box
+        # Find cashier box and scene persons
         valid_persons = []
         for d in frame_dets:
-            if d.get("cls") == "person" and d.get("score", 0) >= 0.40:
+            if d.get("cls") == "person" and d.get("score", 0) >= 0.22:
                 bx = d["box"]
                 pw = bx[2] - bx[0]
                 ph = bx[3] - bx[1]
-                if ph >= 0.16 and (ph / max(0.01, pw)) >= 1.0:
+                if ph >= 0.14:
                     valid_persons.append(d)
 
         cashier_box = None
@@ -256,6 +284,7 @@ def analyze_scene(
                 ref_frame=ref_frame,
                 is_initial_phase=is_initial,
                 cashier_box=cashier_box,
+                has_laptop_support=has_laptop_support,
             )
 
             # 3. Safe door state estimation (returns None on non-safe angles)

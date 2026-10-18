@@ -247,10 +247,14 @@ def main():
         if ref_frame is None:
             ref_frame = event_frame
 
-        # Run NanoDet
+        # Run NanoDet on event_frame and ref_frame
         t0_det = time.perf_counter()
         dets = detector.detect(event_frame, min_score=0.25)
+        ref_dets = detector.detect(ref_frame, min_score=0.20)
         det_time_ms = (time.perf_counter() - t0_det) * 1000.0
+
+        has_laptop = any(d["cls"] == "laptop" for d in ref_dets) or any(d["cls"] == "laptop" for d in dets)
+        stat_boxes = [d["box"] for d in ref_dets if d["cls"] in {"tv", "backpack", "handbag", "laptop", "cell phone"}]
 
         # Benchmark analyze_scene
         t0 = time.perf_counter()
@@ -258,7 +262,7 @@ def main():
             frames=[event_frame],
             timestamps=[peak_sec],
             detections=[dets],
-            context={"ref_frame": ref_frame}
+            context={"ref_frame": ref_frame, "has_laptop_support": has_laptop, "stationary_boxes": stat_boxes}
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         timing_ms_list.append(elapsed_ms)
@@ -405,79 +409,142 @@ def main():
         }
 
     # -------------------------------------------------------------------------
-    # PART 3: Specificity Evaluation on All 19 Clean (Normal) Videos
+    # PART 3: Specificity Evaluation on All 19 Clean Videos (Original & Mirrored)
     # -------------------------------------------------------------------------
-    print("\nEvaluating specificity on 19 normal (clean) videos...")
     normal_vids = [ev["video"] for ev in events if ev["type_code"] == "NONE"]
 
-    total_clean_frames = 0
-    fp_screen_doc_frames = 0
-    fp_safe_open_frames = 0
-    fp_door_open_frames = 0
-    fp_hand_count_frames = 0
-    fp_desk_items_episodes = 0
-    fp_desk_items_frames = 0
+    def eval_clean_suite(flip: bool):
+        total_clean_frames = 0
+        fp_screen_doc_frames = 0
+        fp_safe_open_frames = 0
+        fp_door_open_frames = 0
+        fp_hand_count_frames = 0
+        fp_desk_items_frames = 0
+        fp_desk_items_episodes = 0
+        fp_cash_episodes = 0
+        fp_cash_frames = 0
+        fp_cashbag_episodes = 0
+        fp_cashbag_frames = 0
+        fp_safe_episodes = 0
+        fp_door_episodes = 0
 
-    for nv in normal_vids:
-        vfile = get_video_file(nv)
-        if not vfile:
-            continue
+        mode_lbl = "Mirrored (cv2.flip)" if flip else "Original"
+        print(f"\nEvaluating specificity on {len(normal_vids)} normal (clean) videos [{mode_lbl}]...")
 
-        try:
-            meta = probe(vfile)
-            dur = meta.duration_sec
-            with FrameReader(vfile, meta) as r:
-                ref_frame = r.read_frame_at(0.5)
-                test_times = list(np.arange(1.0, max(1.5, dur - 1.0), 1.5))
-                frames_dict = r.read_frames_at(test_times)
-                test_frames = [frames_dict.get(tt) if frames_dict.get(tt) is not None else ref_frame for tt in test_times]
-        except Exception:
-            continue
+        for nv in normal_vids:
+            vfile = get_video_file(nv)
+            if not vfile:
+                continue
 
-        # Run scene analysis on batch
-        dets_batch = [detector.detect(f, min_score=0.25) for f in test_frames]
-        clean_states = analyze_scene(
-            frames=test_frames,
-            timestamps=test_times,
-            detections=dets_batch,
-            context={"ref_frame": ref_frame}
-        )
+            try:
+                meta = probe(vfile)
+                dur = meta.duration_sec
+                with FrameReader(vfile, meta) as r:
+                    ref_frame = r.read_frame_at(0.5)
+                    test_times = list(np.arange(1.0, max(1.5, dur - 1.0), 1.5))
+                    frames_dict = r.read_frames_at(test_times)
+                    test_frames = [frames_dict.get(tt) if frames_dict.get(tt) is not None else ref_frame for tt in test_times]
+            except Exception:
+                continue
 
-        total_clean_frames += len(clean_states)
-        print(f"  [{nv}] {len(clean_states)} clean frames checked.", flush=True)
-        pers_run_len = 0
-        for cs in clean_states:
-            # 1. Screen document FP
-            if cs.screen_state == "document":
-                fp_screen_doc_frames += 1
+            if flip:
+                ref_frame = cv2.flip(ref_frame, 1)
+                test_frames = [cv2.flip(f, 1) for f in test_frames]
 
-            # 2. Safe open FP
-            if cs.safe_open is not None and cs.safe_open >= 0.50:
-                fp_safe_open_frames += 1
+            dets_batch = [detector.detect(f, min_score=0.20) for f in test_frames]
+            clean_states = analyze_scene(
+                frames=test_frames,
+                timestamps=test_times,
+                detections=dets_batch,
+                context={"ref_frame": ref_frame}
+            )
 
-            # 3. Door open FP
-            if cs.door_open is not None and cs.door_open >= 0.50:
-                fp_door_open_frames += 1
+            total_clean_frames += len(clean_states)
+            print(f"  [{nv} | {mode_lbl}] {len(clean_states)} clean frames checked.", flush=True)
+            pers_run_len = 0.0
+            door_run_len = 0.0
+            safe_run_len = 0.0
+            cash_run_len = 0.0
+            cashbag_run_len = 0.0
 
-            # 4. Hand count FP
-            if cs.cashier_hand_counting is not None and cs.cashier_hand_counting >= 0.50:
-                fp_hand_count_frames += 1
+            for cs in clean_states:
+                if cs.screen_state == "document":
+                    fp_screen_doc_frames += 1
 
-            # 5. Desk items (cup, clothing, food, cash, cash_bag)
-            has_pers_item = any(it.cls in {"cup", "clothing_or_bag", "food", "cash", "cash_bag"} for it in cs.desk_items)
-            if has_pers_item:
-                fp_desk_items_frames += 1
-                pers_run_len += 1.5
-                if pers_run_len >= 3.0:
-                    fp_desk_items_episodes += 1
-            else:
-                pers_run_len = 0.0
+                if cs.safe_open is not None and cs.safe_open >= 0.50:
+                    fp_safe_open_frames += 1
+                    safe_run_len += 1.5
+                    if round(safe_run_len, 2) == 3.0:
+                        fp_safe_episodes += 1
+                else:
+                    safe_run_len = 0.0
 
-    spec_screen = round(1.0 - (fp_screen_doc_frames / max(1, total_clean_frames)), 4)
-    spec_safe = round(1.0 - (fp_safe_open_frames / max(1, total_clean_frames)), 4)
-    spec_door = round(1.0 - (fp_door_open_frames / max(1, total_clean_frames)), 4)
-    spec_hands = round(1.0 - (fp_hand_count_frames / max(1, total_clean_frames)), 4)
-    spec_items = round(1.0 - (fp_desk_items_frames / max(1, total_clean_frames)), 4)
+                if cs.door_open is not None and cs.door_open >= 0.50:
+                    fp_door_open_frames += 1
+                    door_run_len += 1.5
+                    if round(door_run_len, 2) == 3.0:
+                        fp_door_episodes += 1
+                else:
+                    door_run_len = 0.0
+
+                if cs.cashier_hand_counting is not None and cs.cashier_hand_counting >= 0.50:
+                    fp_hand_count_frames += 1
+
+                item_classes = [it.cls for it in cs.desk_items]
+                if len(item_classes) > 0:
+                    fp_desk_items_frames += 1
+                    pers_run_len += 1.5
+                    if round(pers_run_len, 2) == 3.0:
+                        fp_desk_items_episodes += 1
+                else:
+                    pers_run_len = 0.0
+
+                if "cash" in item_classes:
+                    fp_cash_frames += 1
+                    cash_run_len += 1.5
+                    if round(cash_run_len, 2) == 3.0:
+                        fp_cash_episodes += 1
+                else:
+                    cash_run_len = 0.0
+
+                if "cash_bag" in item_classes:
+                    fp_cashbag_frames += 1
+                    cashbag_run_len += 1.5
+                    if round(cashbag_run_len, 2) == 3.0:
+                        fp_cashbag_episodes += 1
+                else:
+                    cashbag_run_len = 0.0
+
+        return {
+            "mode": mode_lbl,
+            "total_clean_frames": total_clean_frames,
+            "fp_episodes_ge_3s": {
+                "cash": fp_cash_episodes,
+                "cash_bag": fp_cashbag_episodes,
+                "door_open": fp_door_episodes,
+                "safe_open": fp_safe_episodes,
+                "desk_items": fp_desk_items_episodes,
+            },
+            "false_positive_frames": {
+                "cash": fp_cash_frames,
+                "cash_bag": fp_cashbag_frames,
+                "door_open": fp_door_open_frames,
+                "safe_open": fp_safe_open_frames,
+                "desk_items": fp_desk_items_frames,
+                "screen_state": fp_screen_doc_frames,
+                "hand_counting": fp_hand_count_frames,
+            },
+            "specificity": {
+                "desk_items": round(1.0 - (fp_desk_items_frames / max(1, total_clean_frames)), 4),
+                "safe_open": round(1.0 - (fp_safe_open_frames / max(1, total_clean_frames)), 4),
+                "door_open": round(1.0 - (fp_door_open_frames / max(1, total_clean_frames)), 4),
+                "hand_counting": round(1.0 - (fp_hand_count_frames / max(1, total_clean_frames)), 4),
+                "screen_state": round(1.0 - (fp_screen_doc_frames / max(1, total_clean_frames)), 4),
+            }
+        }
+
+    orig_clean = eval_clean_suite(flip=False)
+    mirror_clean = eval_clean_suite(flip=True)
 
     # -------------------------------------------------------------------------
     # PART 4: Save CSV and Metrics JSON
@@ -490,11 +557,11 @@ def main():
 
     total_samples = len(oof_results_table)
     overall = {
-        "evaluation_protocol": "True Leave-One-Angle-Out (LOAO) & Clean Video Temporal Specificity",
+        "evaluation_protocol": "True Leave-One-Angle-Out (LOAO) & Clean Video Specificity (Original vs Mirrored)",
         "video_resolution": "464x848 (vertical)",
         "total_eval_samples": total_samples,
         "clean_videos_count": len(normal_vids),
-        "total_clean_frames_evaluated": total_clean_frames,
+        "total_clean_frames_evaluated": orig_clean["total_clean_frames"],
         "loao_accuracy": {
             "screen_state": round(sum(r["screen_ok"] for r in oof_results_table) / total_samples, 3),
             "desk_items": round(sum(r["items_ok"] for r in oof_results_table) / total_samples, 3),
@@ -502,32 +569,33 @@ def main():
             "door_open": round(sum(r["door_ok"] for r in oof_results_table) / total_samples, 3),
             "hand_counting": round(sum(r["hands_ok"] for r in oof_results_table) / total_samples, 3),
         },
-        "clean_video_specificity": {
-            "desk_items": {
-                "specificity": spec_items,
-                "false_positive_frames": fp_desk_items_frames,
-                "false_positive_episodes_ge_3s": fp_desk_items_episodes,
-                "target_met": (fp_desk_items_episodes == 0),
+        "clean_video_specificity_original": orig_clean,
+        "clean_video_specificity_mirrored": mirror_clean,
+        "signal_comparison_table": {
+            "cash": {
+                "original_fp_episodes_ge_3s": orig_clean["fp_episodes_ge_3s"]["cash"],
+                "mirrored_fp_episodes_ge_3s": mirror_clean["fp_episodes_ge_3s"]["cash"],
+                "target_met": (orig_clean["fp_episodes_ge_3s"]["cash"] == 0 and mirror_clean["fp_episodes_ge_3s"]["cash"] == 0),
             },
-            "hand_counting": {
-                "specificity": spec_hands,
-                "false_positive_frames": fp_hand_count_frames,
-                "target_met": (spec_hands >= 0.95),
-            },
-            "safe_open": {
-                "specificity": spec_safe,
-                "false_positive_frames": fp_safe_open_frames,
-                "target_met": (spec_safe >= 0.95),
+            "cash_bag": {
+                "original_fp_episodes_ge_3s": orig_clean["fp_episodes_ge_3s"]["cash_bag"],
+                "mirrored_fp_episodes_ge_3s": mirror_clean["fp_episodes_ge_3s"]["cash_bag"],
+                "target_met": (orig_clean["fp_episodes_ge_3s"]["cash_bag"] == 0 and mirror_clean["fp_episodes_ge_3s"]["cash_bag"] == 0),
             },
             "door_open": {
-                "specificity": spec_door,
-                "false_positive_frames": fp_door_open_frames,
-                "target_met": (spec_door >= 0.95),
+                "original_fp_episodes_ge_3s": orig_clean["fp_episodes_ge_3s"]["door_open"],
+                "mirrored_fp_episodes_ge_3s": mirror_clean["fp_episodes_ge_3s"]["door_open"],
+                "target_met": (orig_clean["fp_episodes_ge_3s"]["door_open"] == 0 and mirror_clean["fp_episodes_ge_3s"]["door_open"] == 0),
             },
-            "screen_state": {
-                "specificity": spec_screen,
-                "false_positive_frames": fp_screen_doc_frames,
-                "target_met": (spec_screen >= 0.95),
+            "safe_open": {
+                "original_fp_episodes_ge_3s": orig_clean["fp_episodes_ge_3s"]["safe_open"],
+                "mirrored_fp_episodes_ge_3s": mirror_clean["fp_episodes_ge_3s"]["safe_open"],
+                "target_met": (orig_clean["fp_episodes_ge_3s"]["safe_open"] == 0 and mirror_clean["fp_episodes_ge_3s"]["safe_open"] == 0),
+            },
+            "desk_items_all": {
+                "original_fp_episodes_ge_3s": orig_clean["fp_episodes_ge_3s"]["desk_items"],
+                "mirrored_fp_episodes_ge_3s": mirror_clean["fp_episodes_ge_3s"]["desk_items"],
+                "target_met": (orig_clean["fp_episodes_ge_3s"]["desk_items"] == 0 and mirror_clean["fp_episodes_ge_3s"]["desk_items"] == 0),
             },
         },
         "timing_analyze_scene_cpu_ms": {
@@ -544,24 +612,27 @@ def main():
     with open(metrics_file, "w", encoding="utf-8") as f:
         json.dump(overall, f, indent=2, ensure_ascii=False)
 
-    print("\n" + "=" * 70)
-    print("EVALUATION COMPLETED SUCCESSFULLY")
+    print("\n" + "=" * 75)
+    print("TASK B5 EVALUATION COMPLETED")
     print(f"Results CSV: {csv_file}")
     print(f"Metrics JSON: {metrics_file}")
-    print(f"Mean CPU Speed: {overall['timing_analyze_scene_cpu_ms']['mean_ms']} ms/frame (limit <= 40 ms)")
+    print(f"Mean CPU Speed: {overall['timing_analyze_scene_cpu_ms']['mean_ms']} ms/frame (budget <= 40 ms)")
     print("\nTrue LOAO Accuracies (out-of-fold):")
     print(f"   screen_state:  {overall['loao_accuracy']['screen_state'] * 100:.1f}%")
     print(f"   desk_items:    {overall['loao_accuracy']['desk_items'] * 100:.1f}%")
     print(f"   safe_open:     {overall['loao_accuracy']['safe_open'] * 100:.1f}%")
     print(f"   door_open:     {overall['loao_accuracy']['door_open'] * 100:.1f}%")
     print(f"   hand_counting: {overall['loao_accuracy']['hand_counting'] * 100:.1f}%")
-    print("\nClean Video Specificity (19 normal clips):")
-    print(f"   desk_items:    {overall['clean_video_specificity']['desk_items']['specificity'] * 100:.2f}% (episodes >= 3s: {fp_desk_items_episodes})")
-    print(f"   hand_counting: {overall['clean_video_specificity']['hand_counting']['specificity'] * 100:.2f}%")
-    print(f"   safe_open:     {overall['clean_video_specificity']['safe_open']['specificity'] * 100:.2f}%")
-    print(f"   door_open:     {overall['clean_video_specificity']['door_open']['specificity'] * 100:.2f}%")
-    print(f"   screen_state:  {overall['clean_video_specificity']['screen_state']['specificity'] * 100:.2f}%")
-    print("=" * 70)
+
+    print("\n" + "-" * 75)
+    print("SIGNAL x (ORIGINAL CLIPS / MIRRORED CLIPS) — FALSE POSITIVE EPISODES >= 3s")
+    print("-" * 75)
+    print(f"{'Signal':<20} | {'Original (FP >= 3s)':<22} | {'Mirrored (FP >= 3s)':<22} | {'Status':<10}")
+    print("-" * 75)
+    for sig, data in overall["signal_comparison_table"].items():
+        status = "PASS" if data["target_met"] else "FAIL"
+        print(f"{sig:<20} | {data['original_fp_episodes_ge_3s']:<22} | {data['mirrored_fp_episodes_ge_3s']:<22} | {status:<10}")
+    print("-" * 75)
 
 
 if __name__ == "__main__":

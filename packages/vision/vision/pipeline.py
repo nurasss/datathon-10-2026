@@ -237,8 +237,11 @@ class VideoAnalyzer:
                 context["ref_frame"] = reference
                 full_dets = [normalized_detection(d, w, h) for ds, _ in all_detections.values()
                              for d in ds if d.score >= self.cfg.detector.min_score]
+                init_lap_frames = sum(1 for obs in coarse.values() if obs.t <= 3.0 and any(d.label == "laptop" for d in obs.detections))
+                init_tot_frames = sum(1 for obs in coarse.values() if obs.t <= 3.0)
+                context["has_laptop_support"] = (init_lap_frames / max(1, init_tot_frames)) >= 0.50
                 context["desk_box"] = DeskItemDetector().localize_desk(reference, full_dets)
-                context["door_box"] = DoorStateDetector().localize_door(reference)
+                context["door_box"] = DoorStateDetector().localize_door(reference, all_person_detections=full_dets, ref_frame=reference)
                 context["safe_box"] = SafeStateDetector().localize_safe(reference, context["desk_box"])
                 laptops = [d["box"] for d in full_dets if d["cls"] == "laptop"]
                 if laptops:

@@ -43,45 +43,43 @@ class SafeStateDetector:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # The safe is a metallic double-door cabinet visible in G05 and G07
-        # Candidate positions based on room geometry
-        candidates = [
-            (0.38, 0.22, 0.62, 0.48),  # G05: back wall behind teller
-            (0.54, 0.18, 0.76, 0.46),  # G07: right wall cabinet
-        ]
-
+        # Search for a grey metallic rectangular cabinet
+        # Must satisfy strict visual properties: low saturation, moderate brightness, strong vertical structural edges
         best_box = None
         best_score = 0.0
 
-        for (rx1, ry1, rx2, ry2) in candidates:
-            x1, y1, x2, y2 = int(rx1 * w), int(ry1 * h), int(rx2 * w), int(ry2 * h)
-            sub_gray = gray[y1:y2, x1:x2]
-            sub_hsv = hsv[y1:y2, x1:x2]
-            if sub_gray.size == 0:
-                continue
+        # Scan candidate wall cabinet windows (aspect ratio 0.6..1.4, vertical structure)
+        for bw in [0.20, 0.24]:
+            for bh in [0.24, 0.28]:
+                for bx in np.arange(0.12, 0.88 - bw, 0.08):
+                    for by in np.arange(0.12, 0.42, 0.08):
+                        x1, y1 = int(bx * w), int(by * h)
+                        x2, y2 = int((bx + bw) * w), int((by + bh) * h)
+                        sub_gray = gray[y1:y2, x1:x2]
+                        sub_hsv = hsv[y1:y2, x1:x2]
+                        if sub_gray.size == 0:
+                            continue
 
-            mean_sat = float(np.mean(sub_hsv[:, :, 1]))
-            mean_val = float(np.mean(sub_hsv[:, :, 2]))
+                        sat = float(np.mean(sub_hsv[:, :, 1]))
+                        val = float(np.mean(sub_hsv[:, :, 2]))
+                        grad_x = cv2.Sobel(sub_gray, cv2.CV_32F, 1, 0, ksize=3)
+                        vert = float(np.mean(np.abs(grad_x)))
 
-            # Vertical edges of the safe frame
-            grad_x = cv2.Sobel(sub_gray, cv2.CV_32F, 1, 0, ksize=3)
-            vert_energy = float(np.mean(np.abs(grad_x)))
-
-            # Strict verification of metallic grey cabinet:
-            # 1. Very low saturation (< 25)
-            # 2. Moderate grey value (75 < V < 165)
-            # 3. Definite vertical structural edges (> 18.0)
-            if mean_sat < 25.0 and 75.0 < mean_val < 165.0 and vert_energy > 18.0:
-                score = vert_energy / (1.0 + mean_sat)
-                if score > best_score and score > 1.0:
-                    best_score = score
-                    best_box = (rx1, ry1, rx2, ry2)
+                        # Strict verification of metallic grey cabinet:
+                        # 1. Very low saturation (< 18.0)
+                        # 2. Moderate grey value (80.0 < V < 155.0)
+                        # 3. Definite vertical structural edges (> 25.0)
+                        if sat < 18.0 and 80.0 < val < 155.0 and vert > 25.0:
+                            score = vert / (1.0 + sat)
+                            if score > best_score and score > 2.0:
+                                best_score = score
+                                best_box = (float(bx), float(by), float(bx + bw), float(by + bh))
 
         if best_box is not None:
             self._ref_box = best_box
             return best_box
 
-        # On angles where safe is not visible (G01, G02, G03, G06, G08, G09, G10, G11), return None
+        # If safe is not confirmed visually without G05/G07 hardcode, return None
         return None
 
     def estimate_open_score(
@@ -118,7 +116,7 @@ class SafeStateDetector:
             if ix2 > ix1 and iy2 > iy1:
                 inter_area = (ix2 - ix1) * (iy2 - iy1)
                 safe_area = (x2 - x1) * (y2 - y1)
-                if inter_area / float(safe_area) > 0.40:
+                if inter_area / float(safe_area) > 0.20:
                     # Safe is occluded by a person
                     return None
 
@@ -137,10 +135,13 @@ class SafeStateDetector:
             if ref_crop.shape == crop.shape:
                 diff = cv2.absdiff(ref_crop, crop)
                 diff_score = float(np.mean(diff))
+                # If frame has not changed from closed reference, safe cannot be open
+                if diff_score < 20.0:
+                    return round(float(max(0.02, min(0.10, diff_score / 150.0))), 3)
 
         # Decision:
-        # Safe door swung open (X-13 at 47-52s): dark cavity visible or large diff
-        if dark_ratio > 0.08 or diff_score > 24.0:
+        # Safe door swung open (X-13 at 47-52s): both substantial diff and visible open dark cavity
+        if (ref_frame is not None and diff_score >= 22.0 and dark_ratio >= 0.10) or (ref_frame is None and dark_ratio > 0.15):
             prob = 0.88 + 0.12 * min(1.0, max(dark_ratio / 0.15, diff_score / 40.0))
             return round(float(np.clip(prob, 0.0, 1.0)), 3)
 
