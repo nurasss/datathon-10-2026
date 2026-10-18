@@ -11,6 +11,7 @@ import numpy as np
 
 from rules.registry import RuleRegistry
 from . import scene_state
+from .action_onsets import retime_events
 from .config import PipelineConfig
 from .detector import NanoDetConfig, NanoDetPersonDetector, PersonDetector
 from .evidence import encode_frame
@@ -301,7 +302,7 @@ class VideoAnalyzer:
         t0 = time.perf_counter()
         tracks, assignments = track_people(observations, post, door, w, h, self.cfg.triggers)
         triggers = build_triggers(observations, tracks, assignments, post, w, h, cfg=self.cfg.triggers, door=door)
-        trace, presence = [], {}
+        trace, presence, onset_samples = [], {}, []
         scenes_at = {round(s.t, 4): s for s in scene_states}
         seat = workplace_model(tracks, post, w, h, self.cfg.triggers)
         for obs in observations:
@@ -317,6 +318,9 @@ class VideoAnalyzer:
                     d.x2/w >= safe_box[0]-margin and d.x1/w <= safe_box[2]+margin and
                     d.y2/h >= safe_box[1]-margin and d.y1/h <= safe_box[3]+margin for d in cashier)
             presence[obs.t] = p
+            onset_samples.append({"t": obs.t, **p,
+                "persons": [{"track_id": tr.track_id, "bbox": normalized_detection(d,w,h)["box"],
+                             "score": float(d.score)} for tr,d in people]})
             if options.keep_trace:
                 dets, phase = all_detections[obs.t]
                 norm = [normalized_detection(d, w, h) for d in dets if d.score >= self.cfg.detector.min_score]
@@ -354,6 +358,9 @@ class VideoAnalyzer:
                                     self.registry, self.cfg, decisions=hybrid_decisions)
         timings["hybrid"] = time.perf_counter()-t0
         hybrid_gray.clear()
+        retime_events(events, onset_samples, meta.duration_sec,
+                      door=(door.x1/w, door.y1/h, door.x2/w, door.y2/h),
+                      min_score=self.cfg.triggers.min_person_score)
         t0 = time.perf_counter()
         if events:
             with FrameReader(path, meta, hflip=options.hflip) as reader:
