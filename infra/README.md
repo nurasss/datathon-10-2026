@@ -15,8 +15,11 @@ infra/
 │   ├── lib.sh                       общие переменные/функции для всех скриптов
 │   ├── run_api.sh                   запуск бэкенда для launchd (PATH, env-файл, продовые дефолты)
 │   ├── install.sh                   установка трёх launchd-агентов + проверка
-│   ├── uninstall.sh                 снятие агентов
-│   └── launchd/*.plist.template     шаблоны: api, tunnel, caffeinate
+│   ├── uninstall.sh                 снятие агентов (включая сторожа)
+│   └── launchd/*.plist.template     шаблоны: api, tunnel, caffeinate, watchdog
+├── watchdog/
+│   ├── watchdog.sh                  сторож: health=200 и jobs/<несуществующий>=404; после 2 неудач — kickstart api
+│   └── install.sh                   установка/снятие агента com.fortevision.watchdog
 └── tunnel/
     ├── run_tunnel.sh                ngrok | cloudflared-named | cloudflared-quick
     └── public_url.sh                где сейчас публичный адрес (ngrok API, метрики cloudflared, логи)
@@ -70,6 +73,7 @@ B=/Users/nuras/Desktop/datathon/fv-infra
 
 $B/infra/macos/install.sh --dry-run          # только проверки, ничего не ставит
 $B/infra/macos/install.sh                    # установить и запустить (делает человек)
+$B/infra/watchdog/install.sh --dry-run       # сторож: проверки + рендер plist (боевая установка — из ~/fortevision/infra, RUNBOOK §2.2)
 $B/infra/healthcheck.sh --both               # проверить локально и через публичный адрес
 $B/infra/healthcheck.sh --selftest           # проверить сам валидатор ответов (11 негативных кейсов)
 $B/infra/healthcheck.sh --validate-file f.json   # проверить сохранённый ответ по контракту
@@ -84,8 +88,10 @@ $B/infra/macos/uninstall.sh                  # снять автозапуск
 | `com.fortevision.api` | `infra/macos/run_api.sh` → `forte-vision/scripts/run_server.sh` (uvicorn, `0.0.0.0:8000`, `FV_WORKER_CONCURRENCY=2`, таймаут 280 с) | `RunAtLoad`, `KeepAlive`, `ThrottleInterval=10` |
 | `com.fortevision.tunnel` | `infra/tunnel/run_tunnel.sh` (ngrok со статическим доменом) | то же |
 | `com.fortevision.caffeinate` | `/usr/bin/caffeinate -dimsu` | то же; не даёт Mac уснуть |
+| `com.fortevision.watchdog` | `infra/watchdog/watchdog.sh` каждые 3 мин: `health=200`, `jobs/<несуществующий>=404`; после 2 неудач подряд — `launchctl kickstart -k` агента api и запись в лог | `RunAtLoad`, `StartInterval=180` |
 
-Логи: `~/Library/Logs/forte-vision/{api,tunnel,caffeinate}.{out,err}.log`.
+Логи: `~/Library/Logs/forte-vision/{api,tunnel,caffeinate,watchdog}.{out,err}.log`; у сторожа ещё
+`watchdog.log` — только события: сбой, восстановление, перезапуск.
 
 ## Локальные инструменты
 

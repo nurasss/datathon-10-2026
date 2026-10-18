@@ -53,17 +53,21 @@ This is an inventory, not a substitute for checking redistribution obligations.
 
 | File | License | Bytes | SHA256 | Use |
 |---|---|---:|---|---|
-| nanodet.onnx | Apache-2.0 | 3800954 | `4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186` | Active NanoDet CPU / person class |
-| person_mediapipe.onnx | Apache-2.0 | 11990159 | `47fd5599d6fa17608f03e0eb0ae230baa6e597d7e8a2c8199fe00abea55a701f` | Unused baseline asset |
+| nanodet_416.onnx | Apache-2.0 | 3796745 | `d891b8c939ce062b13fc7440195d427eeecbec307c2417564d6908309b263e19` | Production NanoDet-Plus-m-1.5x (input 416, both passes) |
+| nanodet_320.onnx | Apache-2.0 | 3796741 | `b81fb3258ccfa65adedf45be7a31454520ae7bd7b9c3d5c8b605fe0896386d72` | Same checkpoint, input 320; comparison export, not used in production |
+| nanodet.onnx | Apache-2.0 | 3800954 | `4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186` | Original upstream export, kept for the paired OpenCV baseline audit |
 
-Both byte sizes/hashes were verified against OpenCV Zoo's Git LFS pointers:
+`nanodet.onnx` was verified against OpenCV Zoo's Git LFS pointer; `nanodet_320/416`
+are exports of the same checkpoint (`scripts/prepare_nanodet.py`, learned tensors
+unchanged), so their byte sizes and hashes are local. Upstream model page:
 
 - <https://github.com/opencv/opencv_zoo/blob/main/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx>
-- <https://github.com/opencv/opencv_zoo/blob/main/models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx>
 
-License texts: the `LICENSE` in each upstream model folder (Apache-2.0).
-Provenance and local license copy: `packages/vision/models/README.md`,
-`packages/vision/models/LICENSE-APACHE-2.0.txt`. No weights exceed 50 MiB.
+License texts: the `LICENSE` in the upstream model folder (Apache-2.0); the ONNX
+Runtime CPU runtime is MIT (`packages/vision/models/LICENSE-ONNXRUNTIME-MIT.txt`).
+The baseline `person_mediapipe.onnx` asset is no longer in the repository and was
+never used by the pipeline. Provenance and local license copies:
+`packages/vision/models/README.md`. No weights exceed 50 MiB.
 
 ## Non-pip components and third-party notices
 
