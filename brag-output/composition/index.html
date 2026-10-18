@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, height=1080">
+<title>ForteVision — от записи к событию</title>
+<script src="assets/gsap.min.js"></script>
+<script src="assets/audio-data.js"></script>
+<style>
+@font-face{font-family:Arial;src:url('assets/arial.ttf')}@font-face{font-family:Arial;src:url('assets/arial-bold.ttf');font-weight:700}
+*{box-sizing:border-box}html,body{margin:0;width:1920px;height:1080px;background:#0f1115;color:#e8eaf0;font-family:Arial,sans-serif}#root{position:relative;width:100%;height:100%;overflow:hidden;background:#0f1115}h1,h2,h3,p{margin:0}.clip{position:absolute;inset:0;background:#0f1115}.rail{position:absolute;left:100px;right:100px;top:65px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #2a2f3a;padding-bottom:27px}.brand{font-size:33px;font-weight:700;letter-spacing:-1px}.brand span,.blue{color:#7fb2ff}.edition{font-size:23px;letter-spacing:3px;color:#9aa3b2}.foot{position:absolute;left:100px;bottom:65px;right:100px;display:flex;justify-content:space-between;font-size:24px;color:#9aa3b2}.eyebrow{font-size:24px;letter-spacing:4px;color:#9aa3b2}.hook{position:absolute;left:100px;top:258px}.hook h1{font-size:115px;letter-spacing:-5px;line-height:1.14}.hf-catalog-per-word-crossfade{display:flex;gap:28px}.hf-catalog-per-word-crossfade span{display:inline-block;transform:translateY(var(--hf-word-y,0px)) scale(var(--hf-word-scale,1));filter:blur(var(--hf-word-blur,0px))}.subhook{font-size:36px;margin-top:33px;color:#9aa3b2}.track{position:absolute;left:100px;right:100px;top:752px;height:60px;border-top:2px solid #454e5e;background:repeating-linear-gradient(90deg,transparent 0px,transparent 84px,#2a2f3a 84px,#2a2f3a 86px);background-size:100% 22px;background-repeat:no-repeat}.event-marker{position:absolute;left:1070px;top:-13px;width:24px;height:24px;border-radius:50%;background:#2f7cf6;box-shadow:0 0 0 10px #182a46}.track-label{position:absolute;top:39px;left:990px;font-size:28px;color:#7fb2ff}.title{position:absolute;left:100px;top:210px;font-size:78px;letter-spacing:-3px;line-height:1.08}.window{position:absolute;left:100px;top:350px;width:1720px;height:515px;border:2px solid #3a4250;border-radius:18px;background:#171a21;overflow:hidden}.window-top{height:73px;border-bottom:2px solid #2a2f3a;padding:22px 35px;display:flex;justify-content:space-between;font-size:23px;color:#9aa3b2}.inside{position:absolute;inset:107px 55px 45px}.inside h3{font-size:38px;margin-bottom:35px}.file{height:86px;width:1000px;background:#0f1115;border:2px solid #454e5e;border-radius:10px;display:flex;align-items:center;gap:25px;padding:0 27px;font-size:29px}.fileicon{color:#7fb2ff;font-weight:700;font-size:24px;border:2px solid #454e5e;padding:9px}.file small{margin-left:auto;color:#9aa3b2;font-size:24px}.button{display:inline-block;background:#2f7cf6;color:#fff;border-radius:10px;padding:19px 30px;margin-top:25px;font-size:28px;font-weight:700}.hint{position:absolute;right:0;top:20px;width:420px;font-size:30px;line-height:1.5;color:#9aa3b2}.cursor{position:absolute;left:510px;top:390px;width:45px;height:60px;z-index:5}.processing{position:absolute;inset:107px 55px 45px;opacity:0}.processing h3{font-size:43px;margin-top:20px}.progress{height:16px;background:#0f1115;margin-top:44px;border-radius:8px;overflow:hidden}.progress-fill{width:100%;height:100%;background:#2f7cf6;transform-origin:left center}.processing p{font-size:29px;color:#9aa3b2;margin-top:28px}.result-title{top:202px}.rows{position:absolute;left:100px;top:362px;width:900px}.result-row{display:flex;align-items:center;gap:25px;padding:31px 0;border-bottom:2px solid #2a2f3a}.rownum{font-size:25px;color:#7fb2ff;width:55px}.rowlabel{font-size:43px;font-weight:700;letter-spacing:-1px}.rowdetail{font-size:25px;color:#9aa3b2;margin-top:10px}.policy{position:absolute;right:100px;top:375px;width:665px;height:437px;padding:44px;background:#171a21;border:2px solid #3a4250;border-radius:16px}.policy h3{font-size:33px;color:#7fb2ff;margin-bottom:27px}.policy p{font-size:37px;line-height:1.28;letter-spacing:-1px}.policy .note{font-size:25px;color:#9aa3b2;line-height:1.4;margin-top:27px}.closeword{position:absolute;left:100px;top:270px;font-size:180px;font-weight:700;letter-spacing:-10px;line-height:1}.closing{position:absolute;left:108px;top:510px;font-size:65px;letter-spacing:-2px}.privacy{position:absolute;left:108px;top:657px;font-size:30px;color:#9aa3b2}.close-line{position:absolute;left:108px;top:762px;width:1590px;height:3px;background:#2f7cf6;transform-origin:left center}.close-rule{position:absolute;left:108px;top:808px;font-size:31px;color:#e8eaf0}.demo{font-size:23px;color:#9aa3b2}
+</style>
+</head>
+<body>
+<div data-hf-id="hf-x42y" id="root" data-composition-id="main" data-width="1920" data-height="1080" data-duration="20">
+ <section data-hf-id="hf-60lb" id="hook" class="clip" data-start="0" data-duration="3.27" data-track-index="0">
+  <div data-hf-id="hf-qzq8" class="rail"><div data-hf-id="hf-ufzp" class="brand">Forte<span data-hf-id="hf-0v65">Vision</span></div><div data-hf-id="hf-m1bm" class="edition">DATATHON 26 / FORTEBANK</div></div>
+  <div data-hf-id="hf-7sj9" class="hook"><h1 data-hf-id="hf-m3fm"><span data-hf-id="hf-a139" class="hf-catalog-per-word-crossfade"><span data-hf-id="hf-3fpv">Не</span><span data-hf-id="hf-dy1j">просто</span><span data-hf-id="hf-g6mu">запись.</span></span><span data-hf-id="hf-oumv" class="hf-catalog-per-word-crossfade blue"><span data-hf-id="hf-1ph8">Проверяемое</span><span data-hf-id="hf-a22v">событие.</span></span></h1><p data-hf-id="hf-x1we" class="subhook">Визуальные признаки. Конкретные основания.</p></div>
+  <div data-hf-id="hf-z5g0" class="track" data-layout-ignore><div data-hf-id="hf-9ftb" class="event-marker"></div><div data-hf-id="hf-e2aw" class="track-label">СОБЫТИЕ / 00:12</div></div>
+  <div data-hf-id="hf-mlgk" class="foot"><span data-hf-id="hf-654h">Локальный анализ кассовых видеозаписей</span><span data-hf-id="hf-4969">01 / 04</span></div>
+ </section>
+ <section data-hf-id="hf-z3vj" id="upload" class="clip" data-start="3.27" data-duration="5.47" data-track-index="0">
+  <div data-hf-id="hf-wyfs" class="rail"><div data-hf-id="hf-i8q1" class="brand">Forte<span data-hf-id="hf-0e0x">Vision</span></div><div data-hf-id="hf-5i76" class="edition">ЗАГРУЗКА → ЛОКАЛЬНЫЙ АНАЛИЗ</div></div>
+  <h2 data-hf-id="hf-e1mt" class="title">Загрузите. Разберите локально.</h2>
+  <div data-hf-id="hf-6r44" class="window"><div data-hf-id="hf-owsu" class="window-top"><span data-hf-id="hf-7xx2">ForteVision / Загрузка</span><span data-hf-id="hf-s10s">Нормативная база · Статус</span></div>
+   <div data-hf-id="hf-qiz0" class="inside"><h3 data-hf-id="hf-ud9g">Проверить видеозапись</h3><div data-hf-id="hf-s7w2" class="file"><span data-hf-id="hf-ncdq" class="fileicon">MOV</span><span data-hf-id="hf-rt66">demo.mov</span><small data-hf-id="hf-pwmb">Демонстрация интерфейса</small></div><div data-hf-id="hf-nlkh" class="button">Отправить на анализ</div><div data-hf-id="hf-g0kr" class="hint"><div data-hf-id="hf-5l5r">Один кассовый пост.</div><div data-hf-id="hf-12vu">Файл до 100 МБ.</div><div data-hf-id="hf-jy69">Обработка на CPU.</div></div></div>
+   <div data-hf-id="hf-yr89" class="processing"><h3 data-hf-id="hf-sl19">Идёт обработка…</h3><div data-hf-id="hf-31j5" class="progress"><div data-hf-id="hf-b9gd" class="progress-fill"></div></div><p data-hf-id="hf-se9w">Видимые события → таймкоды → кадры → нормативные ссылки</p></div>
+   <svg data-hf-id="hf-6wcf" class="cursor" viewBox="0 0 40 55" aria-hidden="true"><path data-hf-id="hf-mntz" d="M3 2L3 43L14 33L23 52L31 48L22 30L37 28Z" fill="#e8eaf0" stroke="#0f1115" stroke-width="3"/></svg>
+  </div>
+  <div data-hf-id="hf-3ly4" class="foot"><span data-hf-id="hf-12c4">Демонстрация сценария · время обработки сокращено</span><span data-hf-id="hf-tpeq">02 / 04</span></div>
+ </section>
+ <section data-hf-id="hf-4wft" id="results" class="clip" data-start="8.74" data-duration="7.1" data-track-index="0">
+  <div data-hf-id="hf-vrip" class="rail"><div data-hf-id="hf-jfn4" class="brand">Forte<span data-hf-id="hf-1ky0">Vision</span></div><div data-hf-id="hf-ctlk" class="edition">ОТ СОБЫТИЯ — К ОСНОВАНИЯМ</div></div>
+  <h2 data-hf-id="hf-lxr6" class="title result-title">У события есть основания.</h2>
+  <div data-hf-id="hf-hnc7" class="rows"><div data-hf-id="hf-mvx5" class="result-row" id="r1"><span data-hf-id="hf-tm4u" class="rownum">01</span><div data-hf-id="hf-yeow"><div data-hf-id="hf-uptf" class="rowlabel">Таймкод</div><div data-hf-id="hf-nasy" class="rowdetail">00:12.0 · иллюстрация поля результата</div></div></div><div data-hf-id="hf-qu16" class="result-row" id="r2"><span data-hf-id="hf-u0fv" class="rownum">02</span><div data-hf-id="hf-y7yw"><div data-hf-id="hf-0x90" class="rowlabel">Кадры-доказательства</div><div data-hf-id="hf-29ho" class="rowdetail">1–3 реальных кадра исходной записи</div></div></div><div data-hf-id="hf-wzqz" class="result-row" id="r3"><span data-hf-id="hf-ueqw" class="rownum">03</span><div data-hf-id="hf-x11t"><div data-hf-id="hf-w3m9" class="rowlabel">Проверенная норма</div><div data-hf-id="hf-6qd9" class="rowdetail">Утверждённый реестр нормативных актов РК</div></div></div></div>
+  <aside data-hf-id="hf-xudx" class="policy"><h3 data-hf-id="hf-6fsf">Нормативная база</h3><p data-hf-id="hf-7yrr">Ссылки и номера пунктов не генерируются моделью.</p><div data-hf-id="hf-gjvw" class="note"><div data-hf-id="hf-qaas">Только утверждённые правила.</div><div data-hf-id="hf-uncv">Оговорки и ограничения сохранены.</div></div></aside>
+  <div data-hf-id="hf-2f11" class="foot"><span data-hf-id="hf-sszm">Визуальные признаки возможных нарушений, не юридический вывод</span><span data-hf-id="hf-tan7">03 / 04</span></div>
+ </section>
+ <section data-hf-id="hf-0vqp" id="close" class="clip" data-start="15.84" data-duration="4.16" data-track-index="0">
+  <div data-hf-id="hf-w5tq" class="rail"><div data-hf-id="hf-vxas" class="eyebrow">ЛОКАЛЬНО. ПРОВЕРЯЕМО. ДЛЯ ЧЕЛОВЕКА.</div><div data-hf-id="hf-8q9h" class="edition">DATATHON 26</div></div>
+  <h2 data-hf-id="hf-wtl7" class="closeword">Forte<span data-hf-id="hf-hkwl" class="blue">Vision</span></h2><p data-hf-id="hf-u5dn" class="closing">Видео остаётся у вас.</p><p data-hf-id="hf-u73j" class="privacy">Без облачных AI API · Без распознавания лиц</p><div data-hf-id="hf-kp3e" class="close-line" data-layout-ignore></div><p data-hf-id="hf-ep4r" class="close-rule">Окончательное решение принимает человек.</p>
+  <div data-hf-id="hf-2tc2" class="foot"><span data-hf-id="hf-xep7">Прототип / ForteBank Datathon 26</span><span data-hf-id="hf-yrrg">04 / 04</span></div>
+ </section>
+ <audio data-hf-id="hf-ciwa" id="music" src="assets/music.mp3" data-start="0" data-duration="20" data-volume="0.28" data-track-index="10"></audio>
+ <audio data-hf-id="hf-9fdl" id="hook-hit" src="assets/reveal.ogg" data-start="0.1" data-duration="0.18" data-volume="0.45" data-track-index="11"></audio>
+ <audio data-hf-id="hf-nqeq" id="upload-click" src="assets/click.ogg" data-start="5.34" data-duration="0.02" data-volume="0.6" data-track-index="11"></audio>
+ <audio data-hf-id="hf-hgb1" id="result-hit" src="assets/reveal.ogg" data-start="8.74" data-duration="0.18" data-volume="0.45" data-track-index="11"></audio>
+</div>
+<script>
+const tl=gsap.timeline({paused:true});
+// Adapted from the installed per-word-crossfade primitive. Short entrances, long readable holds.
+tl.fromTo('.hf-catalog-per-word-crossfade span',{opacity:0,'--hf-word-y':'22px','--hf-word-scale':0.98,'--hf-word-blur':'5px'},{opacity:1,'--hf-word-y':'0px','--hf-word-scale':1,'--hf-word-blur':'0px',duration:0.3,stagger:0.055,ease:'power3.out'},0.05);
+tl.fromTo('.subhook',{opacity:0,y:15},{opacity:1,y:0,duration:0.4,ease:'power2.out'},0.5);
+tl.fromTo('.event-marker',{scale:0.3},{scale:1,duration:0.5,ease:'back.out(1.4)'},0.6);
+tl.fromTo('.track',{scaleX:0.96},{scaleX:1,duration:2.6,ease:'none'},0);
+tl.fromTo('#upload .title',{y:24,opacity:0},{y:0,opacity:1,duration:0.4,ease:'power3.out'},3.27);
+tl.fromTo('.window',{y:60,opacity:0},{y:0,opacity:1,duration:0.55,ease:'expo.out'},3.4);
+tl.fromTo('.cursor',{x:650,y:-180,opacity:0},{x:-200,y:-70,opacity:1,duration:0.7,ease:'power2.inOut'},4.55);
+tl.to('.button',{scale:0.97,duration:0.1,ease:'power2.in'},5.34).to('.button',{scale:1,duration:0.15},5.44);
+tl.to('.inside',{opacity:0,duration:0.25},5.65).to('.cursor',{opacity:0,duration:0.2},5.65);
+tl.to('.processing',{opacity:1,duration:0.3},5.9);
+tl.fromTo('.progress-fill',{scaleX:0.02},{scaleX:1,duration:2.1,ease:'power1.inOut'},6.1);
+// beat-locked: result reveal at 8.74s.
+tl.fromTo('#results .title',{x:-35,opacity:0},{x:0,opacity:1,duration:0.45,ease:'power3.out'},8.74);
+tl.fromTo('.policy',{x:65,opacity:0},{x:0,opacity:1,duration:0.6,ease:'expo.out'},8.9);
+// beat-grid: result rows at 9.29, 10.37, 11.46. Full set holds until 15.84.
+['#r1','#r2','#r3'].forEach((s,i)=>tl.fromTo(s,{x:-30,opacity:0},{x:0,opacity:1,duration:0.35,ease:'power2.out'},[9.29,10.37,11.46][i]));
+tl.fromTo('.closeword',{y:45,opacity:0},{y:0,opacity:1,duration:0.65,ease:'expo.out'},15.84);
+tl.fromTo('.closing',{y:20,opacity:0},{y:0,opacity:1,duration:0.5,ease:'power3.out'},16.05);
+tl.fromTo('.privacy',{opacity:0},{opacity:1,duration:0.4},16.35);
+// beat-locked: closing rule and wordmark emphasis at 17.47s.
+tl.fromTo('.close-line',{scaleX:0},{scaleX:1,duration:0.55,ease:'power3.inOut'},17.47);
+tl.fromTo('.close-rule',{opacity:0,y:12},{opacity:1,y:0,duration:0.4,ease:'power2.out'},16.6);
+// Pre-extracted music data: deterministic per-frame panel presence, never a visualizer.
+for(let f=0;f<600;f++){const energy=AUDIO_DATA.frames[f].bands[0];tl.set('.window,.policy',{borderColor:`rgb(${Math.round(58+energy*15)},${Math.round(66+energy*21)},${Math.round(80+energy*35)})`},f/30);}
+window.__timelines['main']=tl;
+</script>
+</body>
+</html>
