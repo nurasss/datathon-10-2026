@@ -38,6 +38,7 @@ class AnalysisError(RuntimeError):
 class AnalysisOptions:
     job_id: str = ""
     keep_trace: bool = False
+    hflip: bool = False
 
 
 def choose_analysis_fps(cfg: PipelineConfig, meta: VideoMeta) -> float:
@@ -152,7 +153,7 @@ class VideoAnalyzer:
         cache_bytes = 0
         cache_enabled = self.cfg.sampling.cache_max_mb > 0
         next_coarse = 0.0
-        with FrameReader(path, meta) as reader:
+        with FrameReader(path, meta, hflip=options.hflip) as reader:
             dense_fps = self.cfg.sampling.dense_fps
             for t, frame in reader.iter_sampled(dense_fps):
                 if cache_enabled:
@@ -268,7 +269,7 @@ class VideoAnalyzer:
                         yield key, cv2.imdecode(data, cv2.IMREAD_COLOR)
             else:
                 yield from reader.iter_window(start, end, self.cfg.sampling.dense_fps)
-        with FrameReader(path, meta) as reader:
+        with FrameReader(path, meta, hflip=options.hflip) as reader:
             for start, end in windows:
                 for t, frame in window_frames(reader, start, end):
                     key = round(t, 4)
@@ -355,7 +356,7 @@ class VideoAnalyzer:
         hybrid_gray.clear()
         t0 = time.perf_counter()
         if events:
-            with FrameReader(path, meta) as reader:
+            with FrameReader(path, meta, hflip=options.hflip) as reader:
                 self._attach_evidence(events, reader)
         timings["evidence"] = time.perf_counter()-t0
         timings["detector"] = inference_sec
@@ -379,6 +380,7 @@ class VideoAnalyzer:
         quality["cashier_track_aliases"] = {str(tr.track_id): tr.source_track_ids for tr in tracks if tr.role == "cashier"}
         quality["scene_context"] = {k: v for k, v in context.items() if k != "ref_frame"}
         quality["scene_reference"] = "first_dense_frame_of_clip_not_batch"
+        quality["input_transform"] = "hflip" if options.hflip else "identity"
         quality["hybrid"] = {"enabled": self.cfg.hybrid.enabled, "nominal_sampling_fps": 1/b_dt,
             "input_grid": self.cfg.hybrid.input_grid,
             "zones": [z.as_dict() for z in b_zones],

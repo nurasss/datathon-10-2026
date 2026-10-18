@@ -295,6 +295,7 @@ def generate_contact_sheet(
     analysis_res: Any,
     outcome: str,
     output_path: Path,
+    hflip: bool = False,
 ) -> None:
     """Generate diagnostic sheet for one video.
 
@@ -346,6 +347,8 @@ def generate_contact_sheet(
 
     for t in times:
         raw = extract_frame_at(cap, t)
+        if raw is not None and hflip:
+            raw = cv2.flip(raw, 1)
         if raw is None:
             raw = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
         else:
@@ -411,6 +414,8 @@ def generate_contact_sheet(
             # Fallback if no frames in evidence: extract peak frame
             c2 = cv2.VideoCapture(str(entry.path))
             raw = extract_frame_at(c2, peak)
+            if raw is not None and hflip:
+                raw = cv2.flip(raw, 1)
             c2.release()
             if raw is not None:
                 ef_resized = cv2.resize(raw, (frame_w, frame_h))
@@ -537,6 +542,8 @@ def main() -> int:
     parser.add_argument("--only", type=str, default="", help="Comma-separated list of clip IDs to evaluate (e.g. X-14,X-16)")
     parser.add_argument("--cluster-threshold", type=float, default=0.88, help="Clustering correlation threshold")
     parser.add_argument("--no-sheets", action="store_true", help="Skip contact sheet generation")
+    parser.add_argument("--hflip", action="store_true",
+                        help="Mirror decoded pixels horizontally before ALL inference and evidence; no geometry/label remapping")
     parser.add_argument("--oracle-events", type=Path, help="Offline ENGINE upper bound: inject annotated scenes AND actions, never a vision score")
     parser.add_argument("--baseline-dir", type=Path, help="Existing baseline artifacts directory; never rerun baseline")
     parser.add_argument("--events", type=Path, default=ROOT / "data/annotations/events.csv", help="Typed ground truth for scoring only, never passed into vision")
@@ -548,7 +555,9 @@ def main() -> int:
     if (out_dir / "run.json").exists():
         parser.error("output directory already contains a run; refusing to overwrite evidence")
     (out_dir / "run.json").write_text(json.dumps({"argv": sys.argv, "created_at": timestamp,
-        "config": json.loads(args.config.read_text()), "oracle_events": str(args.oracle_events) if args.oracle_events else None,
+        "config": json.loads(args.config.read_text()), "hflip": args.hflip,
+        "input_transform": "hflip" if args.hflip else "identity",
+        "oracle_events": str(args.oracle_events) if args.oracle_events else None,
         "oracle_semantics": "annotated scenes AND actions; engine-only upper bound, not vision accuracy"}, ensure_ascii=False, indent=2))
     annotation_path = args.oracle_events or args.events
     if annotation_path.is_file():
@@ -630,7 +639,7 @@ def main() -> int:
         res = None
         error = None
         try:
-            res = analyzer.analyze(entry.path, AnalysisOptions(keep_trace=True))
+            res = analyzer.analyze(entry.path, AnalysisOptions(keep_trace=True, hflip=args.hflip))
             runtime_sec = round(time.perf_counter() - t0, 2)
             pred_verdict = res.verdict
             events = res.events
@@ -655,6 +664,7 @@ def main() -> int:
                               "width": frame.width, "height": frame.height})
             evidence_records[id(event)] = saved
         trace_payload = {"video": entry.primary_name, "sha256": entry.sha256, "runtime_sec": runtime_sec,
+            "hflip": args.hflip,
             "triggers": res.quality.get("action_trace", []) if res else [],
             "rule_decisions": res.quality.get("rule_decisions", []) if res else [],
             "duration_sec": entry.duration_sec, "verdict": pred_verdict, "error": error,
@@ -759,7 +769,7 @@ def main() -> int:
 
         if not args.no_sheets and res is not None:
             sheet_file = sheets_dir / f"{entry.primary_name}.jpg"
-            generate_contact_sheet(entry, res, outcome, sheet_file)
+            generate_contact_sheet(entry, res, outcome, sheet_file, hflip=args.hflip)
 
     # 5. Write results.csv
     csv_path = out_dir / "results.csv"
