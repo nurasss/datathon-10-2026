@@ -137,9 +137,11 @@ class FrameReader:
     is scaled; ``read_frame_at`` (evidence) always returns source resolution.
     """
 
-    def __init__(self, path: str | Path, meta: VideoMeta, decode_max_width: int | None = None):
+    def __init__(self, path: str | Path, meta: VideoMeta, decode_max_width: int | None = None,
+                 hflip: bool = False):
         self.path = str(path)
         self.meta = meta
+        self.hflip = hflip
         self._cap = cv2.VideoCapture(self.path, cv2.CAP_FFMPEG, [cv2.CAP_PROP_N_THREADS, 1])
         if not self._cap.isOpened():
             raise VideoProbeError(f"cannot open video for decoding: {self.path}")
@@ -216,7 +218,7 @@ class FrameReader:
             return None
         self._decoded += 1
         self._last_t = t_sec
-        return frame
+        return cv2.flip(frame, 1) if self.hflip else frame
 
     def read_frame_at(self, t_sec: float) -> Optional[np.ndarray]:
         """Read a single frame near ``t_sec`` from an independent capture handle.
@@ -253,7 +255,7 @@ class FrameReader:
                     decoded += 1
                 ok, frame = cap.read() if not exhausted else (False, None)
                 decoded += 1
-                result[t_sec] = frame if ok else None
+                result[t_sec] = (cv2.flip(frame, 1) if self.hflip else frame) if ok else None
                 previous_index, previous_frame = target, result[t_sec]
             return result
         finally:

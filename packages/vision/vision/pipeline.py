@@ -11,6 +11,7 @@ import numpy as np
 
 from rules.registry import RuleRegistry
 from . import scene_state
+from .action_onsets import retime_events
 from .config import PipelineConfig
 from .detector import NanoDetConfig, NanoDetPersonDetector, PersonDetector
 from .evidence import encode_frame
@@ -38,6 +39,7 @@ class AnalysisError(RuntimeError):
 class AnalysisOptions:
     job_id: str = ""
     keep_trace: bool = False
+    hflip: bool = False
 
 
 def choose_analysis_fps(cfg: PipelineConfig, meta: VideoMeta) -> float:
@@ -152,7 +154,7 @@ class VideoAnalyzer:
         cache_bytes = 0
         cache_enabled = self.cfg.sampling.cache_max_mb > 0
         next_coarse = 0.0
-        with FrameReader(path, meta) as reader:
+        with FrameReader(path, meta, hflip=options.hflip) as reader:
             dense_fps = self.cfg.sampling.dense_fps
             for t, frame in reader.iter_sampled(dense_fps):
                 if cache_enabled:
@@ -268,7 +270,7 @@ class VideoAnalyzer:
                         yield key, cv2.imdecode(data, cv2.IMREAD_COLOR)
             else:
                 yield from reader.iter_window(start, end, self.cfg.sampling.dense_fps)
-        with FrameReader(path, meta) as reader:
+        with FrameReader(path, meta, hflip=options.hflip) as reader:
             for start, end in windows:
                 for t, frame in window_frames(reader, start, end):
                     key = round(t, 4)
@@ -300,7 +302,7 @@ class VideoAnalyzer:
         t0 = time.perf_counter()
         tracks, assignments = track_people(observations, post, door, w, h, self.cfg.triggers)
         triggers = build_triggers(observations, tracks, assignments, post, w, h, cfg=self.cfg.triggers, door=door)
-        trace, presence = [], {}
+        trace, presence, onset_samples = [], {}, []
         scenes_at = {round(s.t, 4): s for s in scene_states}
         seat = workplace_model(tracks, post, w, h, self.cfg.triggers)
         for obs in observations:
@@ -316,6 +318,9 @@ class VideoAnalyzer:
                     d.x2/w >= safe_box[0]-margin and d.x1/w <= safe_box[2]+margin and
                     d.y2/h >= safe_box[1]-margin and d.y1/h <= safe_box[3]+margin for d in cashier)
             presence[obs.t] = p
+            onset_samples.append({"t": obs.t, **p,
+                "persons": [{"track_id": tr.track_id, "bbox": normalized_detection(d,w,h)["box"],
+                             "score": float(d.score)} for tr,d in people]})
             if options.keep_trace:
                 dets, phase = all_detections[obs.t]
                 norm = [normalized_detection(d, w, h) for d in dets if d.score >= self.cfg.detector.min_score]
@@ -353,9 +358,12 @@ class VideoAnalyzer:
                                     self.registry, self.cfg, decisions=hybrid_decisions)
         timings["hybrid"] = time.perf_counter()-t0
         hybrid_gray.clear()
+        retime_events(events, onset_samples, meta.duration_sec,
+                      door=(door.x1/w, door.y1/h, door.x2/w, door.y2/h),
+                      min_score=self.cfg.triggers.min_person_score)
         t0 = time.perf_counter()
         if events:
-            with FrameReader(path, meta) as reader:
+            with FrameReader(path, meta, hflip=options.hflip) as reader:
                 self._attach_evidence(events, reader)
         timings["evidence"] = time.perf_counter()-t0
         timings["detector"] = inference_sec
@@ -379,6 +387,7 @@ class VideoAnalyzer:
         quality["cashier_track_aliases"] = {str(tr.track_id): tr.source_track_ids for tr in tracks if tr.role == "cashier"}
         quality["scene_context"] = {k: v for k, v in context.items() if k != "ref_frame"}
         quality["scene_reference"] = "first_dense_frame_of_clip_not_batch"
+        quality["input_transform"] = "hflip" if options.hflip else "identity"
         quality["hybrid"] = {"enabled": self.cfg.hybrid.enabled, "nominal_sampling_fps": 1/b_dt,
             "input_grid": self.cfg.hybrid.input_grid,
             "zones": [z.as_dict() for z in b_zones],
