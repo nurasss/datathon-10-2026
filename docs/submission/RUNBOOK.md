@@ -111,10 +111,11 @@ open -e ~/.config/forte-vision/forte-vision.env      # или любой ред�
 ```sh
 FV=/Users/nuras/Desktop/datathon/fv-infra
 
-# статус всех трёх агентов (ищите "state = running", "pid = ...")
+# статус агентов (ищите "state = running", "pid = ...")
 launchctl print gui/$(id -u)/com.fortevision.api      | head -30
 launchctl print gui/$(id -u)/com.fortevision.tunnel   | head -30
 launchctl print gui/$(id -u)/com.fortevision.caffeinate | head -20
+launchctl print gui/$(id -u)/com.fortevision.watchdog | head -20   # сторож, после установки (§2.2)
 
 # логи
 tail -f ~/Library/Logs/forte-vision/api.err.log         # бэкенд
@@ -166,12 +167,36 @@ $FV/infra/deploy.sh --rollback                 # вернуть предыдущ
 Ветка-кандидат сдачи — `integ` (там `onnxruntime==1.20.1`, модель `nanodet_416.onnx` и закрытые
 `/docs` при `FV_ENABLE_DOCS=0`).
 
+### 2.2 Сторож сервиса (watchdog) — установка один раз
+
+Агент `com.fortevision.watchdog` каждые 3 минуты проверяет сервис с ключом жюри:
+
+1. `GET /api/v1/health` — ожидается 200;
+2. `GET /api/v1/jobs/<несуществующий id>` — ожидается **404** (500 или таймаут здесь — регрессия
+   обработки неизвестных задач).
+
+После **двух неудач подряд** сторож выполняет `launchctl kickstart -k gui/$UID/com.fortevision.api`
+и пишет это в лог. В логе только события: сбой, восстановление, перезапуск (без спама каждые 3 минуты).
+
+Установка (один раз, из Terminal; агент запускается из `~/fortevision/infra`, не из Desktop — TCC):
+
+```sh
+rsync -a --exclude '.tools' /Users/nuras/Desktop/datathon/fv-infra/infra/ ~/fortevision/infra/infra/
+~/fortevision/infra/infra/watchdog/install.sh
+```
+
+Проверка: `launchctl print gui/$(id -u)/com.fortevision.watchdog | grep -E 'state|last exit'` и
+`tail -5 ~/Library/Logs/forte-vision/watchdog.log`. Снятие:
+`~/fortevision/infra/infra/watchdog/install.sh --uninstall`.
+
 ---
 
 ## 3. Чек-лист перед сдачей (утро, 15 минут)
 
 1. `pmset -g | grep SleepDisabled` — и `pgrep -fl 'caffeinate -dimsu'` (не должен уходить в сон).
-2. `launchctl print gui/$(id -u)/com.fortevision.api | grep -E 'state|pid'` — `running`.
+2. `launchctl print gui/$(id -u)/com.fortevision.api | grep -E 'state|pid'` — `running`. Если сторож
+   установлен (§2.2): `launchctl print gui/$(id -u)/com.fortevision.watchdog | grep state` — тоже
+   `running`, и в `~/Library/Logs/forte-vision/watchdog.log` нет свежих `FAIL`.
 3. `$FV/infra/healthcheck.sh --both` — PASS по локальному и публичному адресу.
    Либо сразу финальная команда-сводка: `$FV/infra/release_gate.sh` — она включает
    `healthcheck --both --strict-docs`, валидацию трёх сохранённых ответов, проверку ключа
@@ -200,6 +225,7 @@ $FV/infra/deploy.sh --rollback                 # вернуть предыдущ
 | `/api/v1/analyze` даёт **401 всем** | в env-файле пуст `FV_API_KEYS` или жюри дали другой ключ | сверить ключ в `~/.config/forte-vision/forte-vision.env`, перезапустить агент api |
 | Задачи встают в **JOB_TIMEOUT** | ждут очереди дольше бюджета (280 с считается с момента приёма) или клип тяжёлый | поднять `FV_WORKER_CONCURRENCY` до 2 (уже 2 по умолчанию), попросить короткие клипы, смотреть `api.out.log` |
 | Бэкенд циклично перезапускается | сломан env-файл или ключи | `tail -50 ~/Library/Logs/forte-vision/api.err.log`; затем `launchctl print gui/$(id -u)/com.fortevision.api` — в конце покажет код выхода и число перезапусков |
+| `GET /api/v1/jobs/<несуществующий id>` отвечает **500** или таймаутом | регрессия обработки неизвестных задач (контракт требует 404) | воспроизвести curl'ом с ключом; сторож (§2.2) после двух неудач сам перезапустит api — проверить `watchdog.log` и `api.err.log` |
 | Публичный адрес **изменился** | запущен `cloudflared-quick` или ngrok без статического домена | проверить `FV_TUNNEL_PROVIDER`/`NGROK_DOMAIN`; вернуть ngrok + статический домен, kickstart туннеля |
 | Mac ушёл в сон | не загружен агент caffeinate | `launchctl print gui/$(id -u)/com.fortevision.caffeinate`; проверить, что установка прошла без ошибок |
 | Задача `failed` с `OUT_OF_MEMORY` | 2 параллельных анализа при нехватке памяти | поставить `FV_WORKER_CONCURRENCY=1`, kickstart; следить за `vm_stat`/Activity Monitor |
@@ -236,6 +262,9 @@ $FV/infra/deploy.sh --rollback                 # вернуть предыдущ
   на спокойной машине (см. также §3 п.4).
 * `infra/deploy.sh` вживую не запускался: проверен `--dry-run` (в т.ч. на боевых путях) и полный цикл
   в песочнице — rsync, снимок `app.prev`, откат (см. отчёт). Боевой выкат запускает куратор.
+* Сторож (`com.fortevision.watchdog`) подготовлен и протестирован на этом Mac: обе проверки (200/404),
+  счётчик «2 неудачи подряд», перезапуск и запись в лог проверены на локальном стенде; на боевой
+  launchd ставится командой из §2.2 (на момент написания не установлен).
 * Прокси Next.js (порт 3000) не проверялся: это код другого участника.
 * Полный 5-минутный сценарий жюри (много видео подряд) не воспроизводился: это нагрузочный тест,
   его здесь сознательно не запускали.
