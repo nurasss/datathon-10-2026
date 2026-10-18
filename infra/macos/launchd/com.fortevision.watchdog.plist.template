@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Шаблон. infra/watchdog/install.sh подставляет @...@ и кладёт результат в ~/Library/LaunchAgents/ -->
+    <key>Label</key>
+    <string>com.fortevision.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@FV_INFRA_ROOT@/infra/watchdog/watchdog.sh</string>
+    </array>
+
+    <!-- Секретов здесь нет: только пути. Ключ живёт в env-файле с правами 600. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FV_INFRA_ROOT</key><string>@FV_INFRA_ROOT@</string>
+        <key>FV_ENV_FILE</key><string>@FV_ENV_FILE@</string>
+        <key>FV_LOG_DIR</key><string>@FV_LOG_DIR@</string>
+    </dict>
+
+    <key>RunAtLoad</key><true/>
+    <!-- Каждые 3 минуты. KeepAlive не нужен: процесс короткий, сам завершается. -->
+    <key>StartInterval</key><integer>180</integer>
+    <key>ThrottleInterval</key><integer>10</integer>
+
+    <key>WorkingDirectory</key><string>@FV_INFRA_ROOT@</string>
+
+    <key>StandardOutPath</key><string>@FV_LOG_DIR@/watchdog.out.log</string>
+    <key>StandardErrorPath</key><string>@FV_LOG_DIR@/watchdog.err.log</string>
+</dict>
+</plist>

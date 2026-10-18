@@ -16,7 +16,10 @@ FV_ENV_FILE="${FV_ENV_FILE:-$HOME/.config/forte-vision/forte-vision.env}"
 FV_LABEL_API="com.fortevision.api"
 FV_LABEL_TUNNEL="com.fortevision.tunnel"
 FV_LABEL_CAFFEINATE="com.fortevision.caffeinate"
-FV_LABELS=("$FV_LABEL_API" "$FV_LABEL_TUNNEL" "$FV_LABEL_CAFFEINATE")
+FV_LABEL_WATCHDOG="com.fortevision.watchdog"
+# Внимание: uninstall.sh снимает ВСЕ метки из этого списка. install.sh (macos)
+# ставит только api/tunnel/caffeinate; сторожа ставит infra/watchdog/install.sh.
+FV_LABELS=("$FV_LABEL_API" "$FV_LABEL_TUNNEL" "$FV_LABEL_CAFFEINATE" "$FV_LABEL_WATCHDOG")
 
 # --- цвета в выводе (только если терминал) ------------------------------------------------------
 if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
