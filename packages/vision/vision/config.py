@@ -67,7 +67,7 @@ def _rule_policies() -> dict[str, RulePolicy]:
     policies["MANUAL_COUNT"] = RulePolicy(threshold=0.95, min_frames=12, min_sec=3.0)
     policies["SAFE_OPEN"] = RulePolicy(threshold=0.95, min_frames=8, min_sec=1.4)
     policies["DOOR_OPEN"] = RulePolicy(threshold=0.8, min_frames=12, min_sec=3.0)
-    policies["OUTSIDER"].threshold = 0.45
+    policies["OUTSIDER"] = RulePolicy(threshold=0.68, min_frames=5, min_sec=0.8)
     policies["LEAVE_DURING_SERVICE"] = RulePolicy()
     return policies
 
@@ -124,6 +124,8 @@ class TriggerConfig:
     outsider_working_lead_sec: float = 8.0
     client_seated_height_ratio: float = 0.75
     client_settle_sec: float = 2.0
+    client_reid_gap_min_sec: float = 5.0
+    client_reid_gap_max_sec: float = 8.0
     max_seated_aspect_ratio: float = 2.1
     safe_supervision_margin_frac: float = 0.08
 

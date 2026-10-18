@@ -328,7 +328,8 @@ class VideoAnalyzer:
                     "scene": asdict(scenes_at[obs.t]) if obs.t in scenes_at else None})
         decisions = [] if options.keep_trace else None
         events = evaluate_rules(triggers, scene_states, presence, meta.duration_sec, self.registry, self.cfg.rules,
-                                decisions=decisions, track_roles={tr.track_id: tr.role for tr in tracks})[:self.cfg.max_events]
+                                decisions=decisions, track_roles={tr.track_id: tr.role for tr in tracks},
+                                desk_region=(post.x1/w, post.y1/h, post.x2/w, post.y2/h))[:self.cfg.max_events]
         timings["tracking_rules"] = time.perf_counter()-t0
         t0 = time.perf_counter()
         hybrid_decisions = []

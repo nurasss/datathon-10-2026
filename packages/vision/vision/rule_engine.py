@@ -1,6 +1,6 @@
 """Typed rule engine: per-type thresholds and dense-frame persistence gates."""
 from __future__ import annotations
-from dataclasses import asdict, replace
+from dataclasses import asdict
 
 from rules.registry import RuleRegistry
 from .config import RuleEngineConfig, RulePolicy
@@ -46,7 +46,8 @@ def stable_runs(samples, predicate, policy: RulePolicy):
 
 def evaluate_rules(triggers: list[Trigger], scenes: list[SceneState], presence: dict[float, dict],
                    duration: float, registry: RuleRegistry, cfg: RuleEngineConfig | None = None,
-                   decisions: list | None = None, track_roles: dict | None = None):
+                   decisions: list | None = None, track_roles: dict | None = None,
+                   desk_region: tuple[float, float, float, float] | None = None):
     cfg = cfg or RuleEngineConfig()
     scenes = sorted(scenes, key=lambda s: s.t)
     samples = [(s, presence.get(round(s.t, 4), {})) for s in scenes]
@@ -74,7 +75,7 @@ def evaluate_rules(triggers: list[Trigger], scenes: list[SceneState], presence: 
         if not any(t.kind == kind for t in triggers):
             record(code, None, [], "missing_trigger")
 
-    def emit(code, start, end, fact, support, trigger=None):
+    def emit(code, start, end, fact, support, trigger=None, window=None, predicate=None):
         policy = cfg.policy(code)
         if not policy.enabled:
             return
@@ -85,8 +86,9 @@ def evaluate_rules(triggers: list[Trigger], scenes: list[SceneState], presence: 
         event = make_event(code, start, end, fact, registry, duration, meta)
         if event is not None:
             events.append(event)
-        record(code, trigger, [(s, p) for s, p in samples if start <= s.t <= end],
-               "emitted" if event is not None else "registry_not_approved_or_missing")
+        record(code, trigger, window if window is not None else
+               [(s, p) for s, p in samples if start <= s.t <= end],
+               "emitted" if event is not None else "registry_not_approved_or_missing", predicate)
 
     for tr in triggers:
         if tr.kind == "outsider":
@@ -128,8 +130,28 @@ def evaluate_rules(triggers: list[Trigger], scenes: list[SceneState], presence: 
                     if code == "SAFE_OPEN":
                         unattended = p.get("cashier_present") is False or p.get("cashier_near_safe") is False
                         return s.safe_open is not None and s.safe_open >= policy.threshold and unattended
-                    return any(i.cls in VALUABLE_CLASSES and i.score >= policy.threshold for i in s.desk_items)
+                    def on_workplace(item):
+                        if desk_region is None:
+                            return True
+                        cx, cy = (item.box[0]+item.box[2])/2, (item.box[1]+item.box[3])/2
+                        return desk_region[0] <= cx <= desk_region[2] and desk_region[1] <= cy <= desk_region[3]
+                    return any(i.cls in VALUABLE_CLASSES and i.score >= policy.threshold and on_workplace(i)
+                               for i in s.desk_items)
                 runs = list(stable_runs(window, positive, policy))
+                if code == "LEAVE_VALUABLES" and runs:
+                    # Cash that appears only well after the departure boundary is
+                    # not evidence that it was left there. A bulky cash bag may
+                    # become visible only after the cashier stands up.
+                    timely = []
+                    for candidate in runs:
+                        cash_bag = any(i.cls == "cash_bag" and i.score >= policy.threshold
+                                       for s, _ in candidate for i in s.desk_items)
+                        if cash_bag or candidate[0][0].t <= tr.t+policy.max_gap_sec:
+                            timely.append(candidate)
+                    if not timely:
+                        record(code, tr, window, "positive_appeared_after_leave", predicate=positive)
+                        continue
+                    runs = timely
                 # A normal departure after locking/clearing the desk must not
                 # inherit an earlier document/cash state from before preparation.
                 if not runs:
@@ -153,7 +175,8 @@ def evaluate_rules(triggers: list[Trigger], scenes: list[SceneState], presence: 
                         "LEAVE_VALUABLES": "на столе различимы наличные или инкассаторская сумка",
                         "SAFE_OPEN": "сейф видимо открыт при оставлении рабочего места"}[code]
                 emit(code, tr.t, tr.end, f"кассир (трек {tr.track_id}) покидает рабочее место; {fact} "
-                     f"(подтверждено с {run[0][0].t:.2f} до {run[-1][0].t:.2f} с).", [s.t for s, _ in run], tr)
+                     f"(подтверждено с {run[0][0].t:.2f} до {run[-1][0].t:.2f} с).", [s.t for s, _ in run], tr,
+                     window=window, predicate=positive)
         elif tr.kind == "cashier_enter":
             policy = cfg.policy("DOOR_OPEN")
             if not policy.enabled:
@@ -165,14 +188,9 @@ def evaluate_rules(triggers: list[Trigger], scenes: list[SceneState], presence: 
                 record("DOOR_OPEN", tr, window, "scene_unknown" if window and all(s.door_open is None for s,p in window)
                        else "no_stable_positive")
             for run in runs:
-                clear_policy = replace(policy, min_frames=policy.clear_frames, min_sec=policy.clear_sec)
-                closed = bool(list(stable_runs([(s, p) for s, p in window if s.t < run[0][0].t],
-                    lambda s, p: s.door_open is not None and s.door_open < policy.threshold, clear_policy)))
-                if closed or run[0][0].t-tr.t > policy.lookback_sec:
-                    record("DOOR_OPEN", tr, window, "door_closed_before_run" if closed else "positive_too_late")
-                    break
                 emit("DOOR_OPEN", tr.t, run[-1][0].t, f"кассир (трек {tr.track_id}) входит; дверь остаётся открытой "
-                     f"с {run[0][0].t:.2f} до {run[-1][0].t:.2f} с.", [s.t for s, _ in run], tr)
+                     f"с {run[0][0].t:.2f} до {run[-1][0].t:.2f} с.", [s.t for s, _ in run], tr,
+                     window=window, predicate=lambda s, p: s.door_open is not None and s.door_open >= policy.threshold)
                 break
     for code in ("PERSONAL_ITEMS", "PHONE_USE", "MANUAL_COUNT"):
         policy = cfg.policy(code)

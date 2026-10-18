@@ -91,7 +91,9 @@ def test_door_hold_unknown_and_closed_reset():
     assert run(tr, [replace(s, door_open=0.0) for s in states]) == []
     assert run(tr, [replace(s, door_open=None) for s in states]) == []
     assert run(tr, [replace(s, door_open=None) if s.t == 5 else s for s in states]) == []
-    assert run(tr, [replace(s, door_open=0.0) if s.t <= 3.4 else s for s in states]) == []
+    assert [e.event_code for e in run(
+        tr, [replace(s, door_open=0.0) if s.t <= 3.4 else s for s in states]
+    )] == ["DOOR_OPEN"]
 
 
 @pytest.mark.parametrize("item,code", [("cup", "PERSONAL_ITEMS"), ("food", "PERSONAL_ITEMS"),
@@ -123,8 +125,9 @@ def test_outsider_has_approved_isolation_caveat():
 
 def test_unapproved_registry_cannot_emit():
     registry = RuleRegistry.load()
-    tr = Trigger("outsider", 2, 5, facts={"support_times": [2, 2.2, 2.4]})
-    scenes = [scene(t) for t in [2, 2.2, 2.4]]
+    support = [2, 2.2, 2.4, 2.6, 2.8]
+    tr = Trigger("outsider", 2, 5, facts={"support_times": support})
+    scenes = [scene(t) for t in support]
     assert evaluate_rules([tr], scenes, {}, 20, registry)
     registry._by_id["KZ-NB14-P16-1"].status = "draft"
     assert evaluate_rules([tr], scenes, {}, 20, registry) == []

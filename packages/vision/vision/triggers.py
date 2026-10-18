@@ -232,6 +232,17 @@ def build_triggers(observations: list[FrameObservation], tracks, assignments, po
         if initial_client:
             tr.role = "client_other"
             continue
+        # A long-lived client can be re-identified after standing up or a short
+        # detector gap. That continuation is not a new entrant.
+        prior_client = any(
+            old is not tr and old.role == "client_other"
+            and old.history[-1][0]-old.history[0][0] >= cfg.client_settle_sec
+            and cfg.client_reid_gap_min_sec <= entry-old.history[-1][0] <= cfg.client_reid_gap_max_sec
+            for old in tracks
+        )
+        if prior_client:
+            tr.role = "client_other"
+            continue
         crossing = [(t, d) for t, d in credible if t >= entry and d.y2 >= door.y2]
         working_before = cashier is not None and any(
             entry-cfg.outsider_working_lead_sec <= t < entry and d.score >= cfg.min_person_score
